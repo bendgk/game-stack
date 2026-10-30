@@ -21,6 +21,8 @@ pub mod flag {
     pub const WATER: u8 = 8;
     /// Foliage (subsurface-ish wrap lighting, wind sway in the shader).
     pub const FOLIAGE: u8 = 16;
+    /// Takes the colour of the instance that draws it (player shirts, team colours).
+    pub const TINT: u8 = 32;
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -62,6 +64,10 @@ impl Material {
     pub fn water(mut self) -> Self {
         self.flags |= flag::WATER | flag::GLASS;
         self.flags &= !flag::SOLID;
+        self
+    }
+    pub fn tint(mut self) -> Self {
+        self.flags |= flag::TINT;
         self
     }
     pub fn foliage(mut self) -> Self {

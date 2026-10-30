@@ -17,6 +17,18 @@ struct Uniforms {
     world: vec4<u32>,         // x = root offset, y = root level, z = side (voxels), w = flags
     params: vec4<f32>,        // x = lod bias (radians/px), y = fog density, z = gi distance, w = night amount
     tint: vec4<f32>,          // atmosphere tint rgb, w = cloud cover
+    extra: vec4<u32>,         // x = instance count
+};
+
+/// A prefab drawn at an arbitrary position/rotation (players, physics props). Its DAG lives in
+/// the same node pool as the world. Rays are moved into its local frame and traced there.
+struct Inst {
+    r0: vec4<f32>,            // rows of the world→local rotation
+    r1: vec4<f32>,
+    r2: vec4<f32>,
+    pos: vec4<f32>,           // world position of the pivot (voxels), w = bounding radius
+    pivot: vec4<f32>,         // pivot in the prefab's local voxels
+    info: vec4<u32>,          // root, levels, side, tint 0xRRGGBB
 };
 
 struct Material {
@@ -31,6 +43,8 @@ const F_GLASS: u32 = 2u;
 const F_EMITTER: u32 = 4u;
 const F_WATER: u32 = 8u;
 const F_FOLIAGE: u32 = 16u;
+const F_TINT: u32 = 32u;
+const NO_TINT: u32 = 0xffffffffu;
 const MAT_LOD: u32 = 0xffffu;
 const PI: f32 = 3.14159265;
 
@@ -39,6 +53,7 @@ const PI: f32 = 3.14159265;
 @group(0) @binding(2) var<storage, read> mats: array<Material>;
 @group(0) @binding(3) var sky_lut: texture_2d<f32>;
 @group(0) @binding(4) var lin_samp: sampler;
+@group(0) @binding(5) var<storage, read> insts: array<Inst>;
 
 // ---------------------------------------------------------------------------------------------
 // Hashing / sampling
@@ -161,6 +176,7 @@ struct Hit {
     mat: u32,       // MAT_LOD for a coarse (LOD) hit
     avg: u32,       // node average colour (for LOD hits)
     steps: u32,
+    tint: u32,      // instance colour for TINT materials (NO_TINT for the world)
 };
 
 /// The face of cube [lo, lo+size) the ray entered through: the entry-facing face the hit
@@ -210,12 +226,13 @@ fn safe_inv(d: vec3<f32>) -> vec3<f32> {
 /// Trace from `ro` along unit `rd` up to `tmax` voxels.
 /// `lod_k`: a node whose cube is smaller than `t * lod_k` is treated as a (stochastic,
 /// coverage-weighted) solid with its average colour — continuous LOD for free.
-fn trace(ro: vec3<f32>, rd: vec3<f32>, tmax_in: f32, lod_k: f32, lod_rnd: f32, max_steps: u32) -> Hit {
+fn trace_dag(root: u32, root_level: u32, iside: u32, ro: vec3<f32>, rd: vec3<f32>, tmax_in: f32, lod_k: f32, lod_rnd: f32, max_steps: u32) -> Hit {
     var h: Hit;
     h.hit = false;
     h.t = tmax_in;
     h.steps = 0u;
-    let side = f32(u.world.z);
+    h.tint = NO_TINT;
+    let side = f32(iside);
     let inv = safe_inv(rd);
     let t0 = (vec3<f32>(0.0) - ro) * inv;
     let t1 = (vec3<f32>(side) - ro) * inv;
@@ -231,13 +248,12 @@ fn trace(ro: vec3<f32>, rd: vec3<f32>, tmax_in: f32, lod_k: f32, lod_rnd: f32, m
         else if (tn.y >= tn.z) { n = vec3<f32>(0.0, -sign(rd.y), 0.0); }
         else { n = vec3<f32>(0.0, 0.0, -sign(rd.z)); }
     }
-    let root_level = u.world.y;
     var stack_node: array<u32, 12>;
     var stack_key: array<vec3<i32>, 12>;
     var level = root_level;
-    stack_node[level] = u.world.x;
+    stack_node[level] = root;
     stack_key[level] = vec3<i32>(0);
-    let maxc = i32(u.world.z) - 1;
+    let maxc = i32(iside) - 1;
     let step_sign = vec3<f32>(sign(rd));
 
     for (var it = 0u; it < max_steps; it++) {
@@ -312,22 +328,44 @@ fn trace(ro: vec3<f32>, rd: vec3<f32>, tmax_in: f32, lod_k: f32, lod_rnd: f32, m
     return h;
 }
 
-/// Albedo (linear) of a hit, with per-voxel grain.
-fn hit_albedo(mat: u32, avg: u32, voxel: vec3<i32>) -> vec3<f32> {
+/// Trace the scene: the world plus every instance; the nearest hit wins.
+fn trace(ro: vec3<f32>, rd: vec3<f32>, tmax_in: f32, lod_k: f32, lod_rnd: f32, max_steps: u32) -> Hit {
+    var h = trace_dag(u.world.x, u.world.y, u.world.z, ro, rd, tmax_in, lod_k, lod_rnd, max_steps);
+    let n = min(u.extra.x, arrayLength(&insts));
+    for (var i = 0u; i < n; i++) {
+        let it = insts[i];
+        // Bounding sphere first: most rays miss most instances.
+        let oc = ro - it.pos.xyz;
+        let b = dot(oc, rd);
+        let c = dot(oc, oc) - it.pos.w * it.pos.w;
+        if (c > 0.0 && b > 0.0) { continue; }
+        let disc = b * b - c;
+        if (disc < 0.0) { continue; }
+        if (-b - sqrt(disc) > h.t) { continue; }
+        let lo = vec3<f32>(dot(it.r0.xyz, oc), dot(it.r1.xyz, oc), dot(it.r2.xyz, oc)) + it.pivot.xyz;
+        let ld = vec3<f32>(dot(it.r0.xyz, rd), dot(it.r1.xyz, rd), dot(it.r2.xyz, rd));
+        let hi = trace_dag(it.info.x, it.info.y, it.info.z, lo, ld, h.t, lod_k, lod_rnd, max_steps / 2u);
+        if (hi.hit && hi.t < h.t) {
+            h = hi;
+            h.n = normalize(it.r0.xyz * hi.n.x + it.r1.xyz * hi.n.y + it.r2.xyz * hi.n.z);
+            h.tint = it.info.w;
+        }
+    }
+    return h;
+}
+
+/// Albedo (linear) of a hit, with per-voxel grain; TINT materials take the instance colour.
+fn hit_albedo(mat: u32, avg: u32, voxel: vec3<i32>, tint: u32) -> vec3<f32> {
     if (mat == MAT_LOD) {
         let c = vec3<f32>(f32(avg & 255u), f32((avg >> 8u) & 255u), f32((avg >> 16u) & 255u)) / 255.0;
         return pow(c, vec3<f32>(2.2));
     }
     let m = mats[mat];
     let g = (f32(hash3(voxel) & 255u) / 255.0 - 0.5) * 2.0 * m.albedo.w;
-    return max(m.albedo.rgb * (1.0 + g), vec3<f32>(0.0));
-}
-
-/// 1 if `p` (just off a surface) sees the sun. Soft: jittered within a small cone.
-fn sun_visible(p: vec3<f32>, seed: ptr<function, u32>, lod_k: f32) -> f32 {
-    let sd = normalize(u.sun_dir.xyz);
-    if (sd.y <= 0.0) { return 0.0; }
-    let d = cone_dir(sd, 0.012, rand(seed), rand(seed));
-    let h = trace(p, d, 1e6, lod_k, rand(seed), 160u);
-    return select(1.0, 0.0, h.hit);
+    var base = m.albedo.rgb;
+    if ((m.flags & F_TINT) != 0u && tint != NO_TINT) {
+        let t = vec3<f32>(f32((tint >> 16u) & 255u), f32((tint >> 8u) & 255u), f32(tint & 255u)) / 255.0;
+        base = pow(t, vec3<f32>(2.2));
+    }
+    return max(base * (1.0 + g), vec3<f32>(0.0));
 }

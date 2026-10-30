@@ -97,14 +97,46 @@ gives you a prefab to place anywhere.
 
 ## Rendering
 
-`vx_render::Renderer` traces the DAG on the GPU. It does:
-- empty-space skipping and LOD by coverage;
-- soft sun shadows and one bounce of GI with temporal accumulation and an à-trous denoiser;
-- GGX specular, traced reflections, glass, emission (lights switch on at dusk) and height fog;
-- a physical Rayleigh/Mie sky;
-- TAA, AgX tonemapping and bloom.
+`vx_render::Renderer` ray traces the DAG on the GPU in four passes:
 
+1. **trace**: primary rays with empty-space skipping and deterministic LOD (a distant node
+   counts as solid when it's at least half full).
+2. **shade**:
+   - a hard sun shadow ray;
+   - ambient occlusion by cone tracing the DAG's coverage pyramid (every node stores how full it
+     is, so one read covers a whole cone step);
+   - GGX highlights;
+   - mirror rays only for water, glass and polished metal;
+   - emission (lights switch on at dusk) and height fog under a physical Rayleigh/Mie sky.
+3. **TAA**: anti-aliasing.
+4. **present**: AgX tonemapping and a little bloom.
+
+Nothing in shading is random, so the image is stable: no boiling noise and no denoiser to pay
+for. A 1 km city renders in about 6 ms at 1600×900 on an M-series GPU, and above 120 fps at
+1400×820 in Chrome (WebGPU).
+
+`Renderer::set_instances` draws prefabs (players, physics props) anywhere at any rotation. Their
+DAGs are appended to the world's node pool with `Dag::append`, and rays are moved into each
+prefab's frame. `TINT` materials take a per-instance colour (player shirts).
 `vx_render::headless::Headless` renders to PNG without a window, as the CLI does.
+
+## Worlds for games
+
+- **`vx_gen::bundle`**: one file with the world, every catalog prop, a player avatar, the
+  palette, the spawn point and the spec, plus a content hash. Serve it over HTTP and load it on
+  both server and client.
+- **`vx_core::Collider`**: "is any solid voxel in this box?" in a few node visits. It's
+  integer-only, so physics built on it is deterministic natively and in wasm. Water doesn't block.
+- **`SceneSpec.landscape`** (`flat`, `hills`, `mountains`, `island`, `canyons`, `mesas`, `blocky`)
+  with `city`, `relief`, `erosion` and `forest`: eroded terrain with forests, with the city on a
+  plateau in the middle or no city at all.
+- **`gs_core::SERVER`** and `Authority::server_command`: inject commands from the server (an
+  admin tool, an MCP agent) into the deterministic log.
+
+[voxelscape](https://github.com/bendgk/voxelscape) is a complete game built on all of this:
+- prompt a world (local model, Claude Code, or offline);
+- explore it together, with collision, flight and a physics gun;
+- let an agent run the room over MCP.
 
 ## Using a local model (optional)
 
@@ -114,7 +146,9 @@ it:
 - Mac: `mlx_lm.server`.
 - Windows / Linux / Docker: Ollama or `llama.cpp --server`.
 
-Validate the reply with `SceneSpec::from_json(..)?.sanitized()`. It clamps every field.
+`vx_gen::guide()` is a ready-made system prompt (every field, its range, examples), and
+`vx_gen::merge_reply(prompt, reply, base)` turns a model's reply into a clamped spec. It
+tolerates prose and `<think>` blocks and ignores bad fields.
 
 ## Rules (same spirit as the rest of the stack)
 

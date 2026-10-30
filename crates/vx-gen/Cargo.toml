@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 vx-core = { path = "../vx-core", default-features = false }
+vx-terrain = { path = "../vx-terrain", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 wgpu = { version = "30", optional = true }
@@ -17,5 +18,5 @@ bytemuck = { version = "1.25", optional = true }
 [features]
 default = ["parallel", "gpu"]
 # GPU wave function collapse (wgpu compute).
-gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
-parallel = ["vx-core/parallel"]
+gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck", "vx-terrain/gpu"]
+parallel = ["vx-core/parallel", "vx-terrain/parallel"]

@@ -254,6 +254,15 @@ impl<G: Game> Authority<G> {
         self.receive_inputs(id, InputBatch { first_tick: tick, inputs: vec![input], ack: None });
     }
 
+    /// A command from the server itself (an admin tool, an MCP agent, a scripted event). It
+    /// enters the log like any other command, attributed to [`crate::SERVER`], so replays and
+    /// predictions see it too.
+    pub fn server_command(&mut self, cmd: G::Command) {
+        if self.pending_commands.len() < 1024 {
+            self.pending_commands.push((crate::SERVER, cmd));
+        }
+    }
+
     pub fn command(&mut self, id: PlayerId, cmd: G::Command) {
         if self.seats.get(&id).is_some_and(|s| s.active) && self.pending_commands.len() < 1024 {
             self.pending_commands.push((id, cmd));

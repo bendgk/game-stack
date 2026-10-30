@@ -54,12 +54,7 @@ fn spec_of(a: &HashMap<String, String>) -> SceneSpec {
 
 pub fn env_for(spec: &SceneSpec) -> Env {
     let (elev, az) = spec.sun();
-    let mut env = Env { sun_elevation: elev, sun_azimuth: az, fog: 0.0004 + spec.fog * 0.004, ..Default::default() };
-    if elev < 0.05 {
-        env.exposure = 0.18 + (0.05 - elev).min(0.35) * 6.0;
-        env.bloom = 0.6;
-    }
-    env
+    Env::from_sun(elev, az, spec.fog)
 }
 
 fn cam_arg(a: &HashMap<String, String>) -> Option<Camera> {
@@ -265,7 +260,7 @@ fn main() {
         "gen" | "shot" => {
             let spec = spec_of(&a);
             eprintln!("spec: {}", serde_json::to_string(&spec).unwrap());
-            let w = generate_with(&spec, Options { gpu_wfc: a.contains_key("gpu-wfc") });
+            let w = generate_with(&spec, Options { gpu_wfc: a.contains_key("gpu-wfc"), gpu_erosion: true });
             let s = &w.stats;
             println!(
                 "{}: {:.3e} voxels ({:.1} billion) in {} MB · plan {} ms · emit {} ms · build {} ms · sampled leaves {} · linked {} · {} buildings, {} props, {} roads · unique modules {} tiles {} props {}",
@@ -290,7 +285,44 @@ fn main() {
                 std::fs::write(format!("{out}.palette.json"), serde_json::to_string(&w.palette).unwrap()).unwrap();
                 println!("wrote {out}");
             }
-            if cmd == "shot" {
+            if cmd == "shot" && a.contains_key("props") {
+                // The world bundle (world + every prop + the avatar) with all props lined up at spawn.
+                let (bytes, meta) = vx_gen::bundle::bundle(&w);
+                let (_, dag) = vx_gen::bundle::decode(&bytes).unwrap();
+                println!("bundle {} ({} MB, {} prefabs)", meta.hash, bytes.len() >> 20, meta.prefabs.len());
+                let mut inst = Vec::new();
+                for (i, p) in meta.prefabs.iter().enumerate() {
+                    let row = (i / 12) as f32;
+                    let col = (i % 12) as f32;
+                    let pivot = Vec3::new(
+                        (p.min[0] + p.max[0]) as f32 / 2.0,
+                        p.min[1] as f32,
+                        (p.min[2] + p.max[2]) as f32 / 2.0,
+                    );
+                    let pos = w.spawn + Vec3::new(col * 110.0 - 600.0, 0.0, -row * 140.0 - 200.0);
+                    let rot = vx_core::glam::Quat::from_rotation_y(i as f32 * 0.4);
+                    inst.push(vx_render::Instance {
+                        root: p.root,
+                        levels: p.level,
+                        pos,
+                        rot,
+                        pivot,
+                        tint: [0xff3355, 0x33aaff, 0xffcc00][i % 3],
+                    });
+                }
+                let cam = Camera { pos: w.spawn + Vec3::new(0.0, 260.0, 380.0), yaw: 0.0, pitch: -0.32, fov_y: 1.0 };
+                let (wd, ht) = (
+                    a.get("w").and_then(|v| v.parse().ok()).unwrap_or(1600),
+                    a.get("h").and_then(|v| v.parse().ok()).unwrap_or(900),
+                );
+                let mut hl = Headless::new(wd, ht).expect("gpu");
+                hl.r.set_world(&dag, &meta.palette).expect("upload");
+                hl.r.set_instances(&inst);
+                let ms = hl.render(&cam_arg(&a).unwrap_or(cam), &env_for(&w.spec), 48, 0.0);
+                let out = a.get("out").cloned().unwrap_or("shot.png".into());
+                hl.save_png(&out).unwrap();
+                println!("rendered {out}: {ms:.2} ms/frame with {} instances", inst.len());
+            } else if cmd == "shot" {
                 let cam = Camera { pos: w.spawn + Vec3::new(0.0, 900.0, 2400.0), yaw: 0.35, pitch: -0.22, fov_y: 1.0 };
                 shot(&a, &w.dag, &w.palette, cam, &env_for(&w.spec));
             }

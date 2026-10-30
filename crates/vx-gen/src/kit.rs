@@ -140,6 +140,10 @@ impl Shape for Moved {
     fn sample(&self, p: IVec3) -> Mat {
         self.inner.sample(p - self.by)
     }
+    fn as_instance(&self, cube: Aabb, level: u32) -> Option<(&Arc<Dag>, vx_core::NodeRef)> {
+        // Prefab links survive a move by a multiple of the linked node size.
+        self.inner.as_instance(Aabb::new(cube.min - self.by, cube.max - self.by), level)
+    }
 }
 
 /// Collects parts (in local voxel coordinates) and builds them into a prefab.

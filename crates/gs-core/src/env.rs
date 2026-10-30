@@ -47,8 +47,13 @@ impl<G: Game> Env<G> {
         self.auth.inject(id, t, input);
     }
 
+    /// A command from player `id`, or from the server itself when `id` is [`crate::SERVER`].
     pub fn command(&mut self, id: PlayerId, cmd: G::Command) {
-        self.auth.command(id, cmd);
+        if id == crate::SERVER {
+            self.auth.server_command(cmd);
+        } else {
+            self.auth.command(id, cmd);
+        }
     }
 
     /// Advance one tick; returns the match result the first tick it becomes available.

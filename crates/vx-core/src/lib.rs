@@ -14,11 +14,13 @@
 pub mod compose;
 pub mod dag;
 pub mod mat;
+pub mod query;
 
 pub use compose::{Aabb, BoxShape, CARVE, Class, Dense, FnShape, Instance, Shape, build, prefab};
 pub use dag::{Dag, DagBuilder, EMPTY, NodeRef, Pool, RayHit, side};
-pub use glam::{IVec3, Vec3};
+pub use glam::{self, IVec3, Vec3};
 pub use mat::{AIR, GpuMaterial, Mat, Material, Palette, flag};
+pub use query::Collider;
 
 /// Voxels per metre (1 voxel = 3.125 cm).
 pub const VOXELS_PER_M: i32 = 32;

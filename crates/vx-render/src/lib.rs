@@ -3,11 +3,13 @@
 //! A GPU ray tracer for the hash-consed voxel DAG, written in WGSL and driven by wgpu: it runs
 //! natively on Metal (`vx-shot` renders PNGs headless) and in the browser on WebGPU.
 //!
-//! Per frame: **trace** (primary rays + stochastic LOD → G-buffer) → **light** (soft sun
-//! shadow ray + one ray-traced GI bounce, itself sun-shadowed) → **accum** (temporal
-//! reprojection with disocclusion tests) → **atrous** ×3 (edge-aware denoise) → **composite**
-//! (PBR-ish materials, GGX sun highlight, ray-traced reflections, emission, physical sky,
-//! aerial-perspective height fog) → **taa** (YCoCg-clamped history) → **present** (bloom, AgX).
+//! Per frame: **sky LUT** (physical Rayleigh/Mie) → **trace** (primary rays, deterministic LOD
+//! → G-buffer) → **shade** (hard sun shadow ray, ambient occlusion cone-traced through the DAG's
+//! coverage pyramid, GGX highlight, mirror rays for water/glass/metal, emission, height fog) →
+//! **taa** (YCoCg-clamped history: anti-aliasing) → **present** (bloom, AgX).
+//!
+//! Every lighting term is deterministic: no per-frame random samples, so the image is stable
+//! (no boiling noise, no smearing) and there is no denoiser to pay for.
 
 // Index loops mirror the WGSL kernels and grid maths; keeping them literal reads better here.
 #![allow(clippy::needless_range_loop, clippy::type_complexity, clippy::too_many_arguments)]
@@ -104,6 +106,24 @@ impl Default for Env {
 }
 
 impl Env {
+    /// Lighting for a sun position (radians) and a 0..1 haze amount. At dusk and night the
+    /// exposure rises a little and bloom picks up the lights; not so much that noise and glow
+    /// take over the image.
+    pub fn from_sun(elevation: f32, azimuth: f32, haze: f32) -> Env {
+        let mut env = Env {
+            sun_elevation: elevation,
+            sun_azimuth: azimuth,
+            fog: 0.0003 + haze.clamp(0.0, 1.0) * 0.0025,
+            ..Default::default()
+        };
+        if elevation < 0.08 {
+            let dark = ((0.08 - elevation) / 0.4).clamp(0.0, 1.0);
+            env.exposure = 0.18 + dark * 0.9;
+            env.bloom = 0.2 + dark * 0.1;
+        }
+        env
+    }
+
     pub fn sun_dir(&self) -> Vec3 {
         Vec3::new(
             self.sun_elevation.cos() * self.sun_azimuth.sin(),
@@ -132,7 +152,37 @@ struct Uniforms {
     world: [u32; 4],
     params: [f32; 4],
     tint: [f32; 4],
+    extra: [u32; 4],
 }
+
+/// A prefab to draw (a player, a physics prop). `root`/`levels` address a DAG that was
+/// appended into the world's node pool (`vx_core::Dag::append`).
+#[derive(Clone, Copy, Debug)]
+pub struct Instance {
+    pub root: u32,
+    pub levels: u32,
+    /// World position of `pivot` (voxels).
+    pub pos: Vec3,
+    pub rot: glam::Quat,
+    /// The point inside the prefab (local voxels) that sits at `pos`.
+    pub pivot: Vec3,
+    /// 0xRRGGBB for TINT materials.
+    pub tint: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuInstance {
+    r0: [f32; 4],
+    r1: [f32; 4],
+    r2: [f32; 4],
+    pos: [f32; 4],
+    pivot: [f32; 4],
+    info: [u32; 4],
+}
+
+/// Instances drawn per frame at most.
+pub const MAX_INSTANCES: usize = 256;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -271,11 +321,6 @@ struct Targets {
     nrm: [wgpu::TextureView; 2],
     alb: wgpu::TextureView,
     mat: wgpu::TextureView,
-    cur_dir: wgpu::TextureView,
-    cur_gi: wgpu::TextureView,
-    hist_dir: [wgpu::TextureView; 2],
-    hist_gi: [wgpu::TextureView; 2],
-    tmp: [wgpu::TextureView; 2],
     hdr: wgpu::TextureView,
     taa: [wgpu::TextureView; 2],
 }
@@ -305,11 +350,6 @@ impl Targets {
             nrm: two(F16X4, "nrm"),
             alb: tex(d, w, h, F16X4, "alb"),
             mat: tex(d, w, h, U32, "mat"),
-            cur_dir: tex(d, w, h, F16X4, "cur_dir"),
-            cur_gi: tex(d, w, h, F16X4, "cur_gi"),
-            hist_dir: two(F16X4, "hist_dir"),
-            hist_gi: two(F16X4, "hist_gi"),
-            tmp: two(F16X4, "atrous"),
             hdr: tex(d, w, h, F16X4, "hdr"),
             taa: two(F16X4, "taa"),
         }
@@ -330,7 +370,6 @@ pub struct Renderer {
     target_format: wgpu::TextureFormat,
     uniforms: wgpu::Buffer,
     present_buf: wgpu::Buffer,
-    step_bufs: [wgpu::Buffer; 3],
     scene_layout: wgpu::BindGroupLayout,
     scene: Option<wgpu::BindGroup>,
     sky_lut: wgpu::TextureView,
@@ -338,11 +377,10 @@ pub struct Renderer {
     skylut: Pass,
     nodes: Option<wgpu::Buffer>,
     mats: Option<wgpu::Buffer>,
+    insts: wgpu::Buffer,
+    inst_count: u32,
     trace: Pass,
-    light: Pass,
-    accum: Pass,
-    atrous: Pass,
-    composite: Pass,
+    shade: Pass,
     taa: Pass,
     blit: wgpu::RenderPipeline,
     blit_layout: wgpu::BindGroupLayout,
@@ -377,7 +415,14 @@ impl Renderer {
         height: u32,
         target_format: wgpu::TextureFormat,
     ) -> Self {
-        let scene_layout = layout(&device, "scene", &[B::Uniform, B::Storage, B::Storage, B::TexFilter, B::Sampler]);
+        let scene_layout =
+            layout(&device, "scene", &[B::Uniform, B::Storage, B::Storage, B::TexFilter, B::Sampler, B::Storage]);
+        let insts = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("instances"),
+            size: (MAX_INSTANCES * std::mem::size_of::<GpuInstance>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uniforms"),
             size: std::mem::size_of::<Uniforms>() as u64,
@@ -390,13 +435,6 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let step_bufs = [1i32, 2, 4].map(|s| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("atrous step"),
-                contents: bytemuck::cast_slice(&[s, 0, 0, 0]),
-                usage: wgpu::BufferUsages::UNIFORM,
-            })
-        });
         let sl = &scene_layout;
         let trace = compute_pass(
             &device,
@@ -406,37 +444,13 @@ impl Renderer {
             "trace_main",
             &[B::Out(F32X4), B::Out(F16X4), B::Out(F16X4), B::Out(U32)],
         );
-        let light = compute_pass(
+        let shade = compute_pass(
             &device,
             sl,
-            "light",
-            include_str!("shaders/light.wgsl"),
-            "light_main",
-            &[B::Tex, B::Tex, B::Out(F16X4), B::Out(F16X4)],
-        );
-        let accum = compute_pass(
-            &device,
-            sl,
-            "accum",
-            include_str!("shaders/accum.wgsl"),
-            "accum_main",
-            &[B::Tex, B::Tex, B::Tex, B::Tex, B::Tex, B::Tex, B::Tex, B::Tex, B::Out(F16X4), B::Out(F16X4)],
-        );
-        let atrous = compute_pass(
-            &device,
-            sl,
-            "atrous",
-            include_str!("shaders/atrous.wgsl"),
-            "atrous_main",
-            &[B::Tex, B::Tex, B::Tex, B::Out(F16X4), B::Uniform],
-        );
-        let composite = compute_pass(
-            &device,
-            sl,
-            "composite",
-            include_str!("shaders/composite.wgsl"),
-            "composite_main",
-            &[B::Tex, B::Tex, B::Tex, B::TexUint, B::Tex, B::Tex, B::Out(F16X4)],
+            "shade",
+            include_str!("shaders/shade.wgsl"),
+            "shade_main",
+            &[B::Tex, B::Tex, B::Tex, B::TexUint, B::Out(F16X4)],
         );
         let taa = compute_pass(
             &device,
@@ -538,7 +552,6 @@ impl Renderer {
             target_format,
             uniforms,
             present_buf,
-            step_bufs,
             scene_layout,
             scene: None,
             sky_lut,
@@ -546,11 +559,10 @@ impl Renderer {
             skylut,
             nodes: None,
             mats: None,
+            insts,
+            inst_count: 0,
             trace,
-            light,
-            accum,
-            atrous,
-            composite,
+            shade,
             taa,
             blit,
             blit_layout,
@@ -612,6 +624,7 @@ impl Renderer {
                 mats.as_entire_binding(),
                 tv(&self.sky_lut),
                 wgpu::BindingResource::Sampler(&self.sampler),
+                self.insts.as_entire_binding(),
             ],
         ));
         self.nodes = Some(nodes);
@@ -620,6 +633,32 @@ impl Renderer {
         self.info = WorldInfo { bytes, levels: dag.levels, side: dag.side() as u32 };
         self.frame = 0;
         Ok(())
+    }
+
+    /// The prefabs to draw this frame (players, props). At most [`MAX_INSTANCES`].
+    pub fn set_instances(&mut self, list: &[Instance]) {
+        let gi: Vec<GpuInstance> = list
+            .iter()
+            .take(MAX_INSTANCES)
+            .map(|i| {
+                // Rows of the world→local rotation = columns of the local→world one.
+                let m = glam::Mat3::from_quat(i.rot.normalize());
+                let side = (1u32 << (2 * i.levels)) as f32;
+                let far = i.pivot.max(Vec3::splat(side) - i.pivot);
+                GpuInstance {
+                    r0: [m.x_axis.x, m.x_axis.y, m.x_axis.z, 0.0],
+                    r1: [m.y_axis.x, m.y_axis.y, m.y_axis.z, 0.0],
+                    r2: [m.z_axis.x, m.z_axis.y, m.z_axis.z, 0.0],
+                    pos: [i.pos.x, i.pos.y, i.pos.z, far.length()],
+                    pivot: [i.pivot.x, i.pivot.y, i.pivot.z, 0.0],
+                    info: [i.root, i.levels, side as u32, i.tint],
+                }
+            })
+            .collect();
+        if !gi.is_empty() {
+            self.queue.write_buffer(&self.insts, 0, bytemuck::cast_slice(&gi));
+        }
+        self.inst_count = gi.len() as u32;
     }
 
     /// Render one frame into `target` (a view of `target_format`).
@@ -647,6 +686,7 @@ impl Renderer {
             world: [self.world[0], self.world[1], self.world[2], self.debug_view],
             params: [pixel_angle * env.lod, env.fog, env.gi_distance, env.night()],
             tint: [env.tint.x, env.tint.y, env.tint.z, 0.0],
+            extra: [self.inst_count, 0, 0, 0],
         };
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
         let srgb_target = self.target_format.is_srgb();
@@ -665,49 +705,17 @@ impl Renderer {
         let t = &self.targets;
         let d = &self.device;
         let g_trace = bind(d, &self.trace.layout, &[tv(&t.pos[i]), tv(&t.nrm[i]), tv(&t.alb), tv(&t.mat)]);
-        let g_light = bind(d, &self.light.layout, &[tv(&t.pos[i]), tv(&t.nrm[i]), tv(&t.cur_dir), tv(&t.cur_gi)]);
-        let g_accum = bind(
-            d,
-            &self.accum.layout,
-            &[
-                tv(&t.pos[i]),
-                tv(&t.nrm[i]),
-                tv(&t.pos[j]),
-                tv(&t.nrm[j]),
-                tv(&t.cur_dir),
-                tv(&t.cur_gi),
-                tv(&t.hist_dir[j]),
-                tv(&t.hist_gi[j]),
-                tv(&t.hist_dir[i]),
-                tv(&t.hist_gi[i]),
-            ],
-        );
-        let at = |src: &wgpu::TextureView, dst: &wgpu::TextureView, k: usize| {
-            bind(
-                d,
-                &self.atrous.layout,
-                &[tv(&t.pos[i]), tv(&t.nrm[i]), tv(src), tv(dst), self.step_bufs[k].as_entire_binding()],
-            )
-        };
-        let g_at = [at(&t.hist_gi[i], &t.tmp[0], 0), at(&t.tmp[0], &t.tmp[1], 1), at(&t.tmp[1], &t.tmp[0], 2)];
-        let g_comp = bind(
-            d,
-            &self.composite.layout,
-            &[tv(&t.pos[i]), tv(&t.nrm[i]), tv(&t.alb), tv(&t.mat), tv(&t.hist_dir[i]), tv(&t.tmp[0]), tv(&t.hdr)],
-        );
+        let g_shade = bind(d, &self.shade.layout, &[tv(&t.pos[i]), tv(&t.nrm[i]), tv(&t.alb), tv(&t.mat), tv(&t.hdr)]);
         let g_taa = bind(
             d,
             &self.taa.layout,
             &[tv(&t.pos[i]), tv(&t.hdr), tv(&t.taa[j]), wgpu::BindingResource::Sampler(&self.sampler), tv(&t.taa[i])],
         );
-        // Debug views 3+: show an intermediate buffer raw.
+        // Debug views 3+: show an intermediate buffer raw (3 hdr, 4 albedo, 5 normals).
         let src = match self.debug_view {
             3 => &t.hdr,
             4 | 99 => &t.alb,
             5 => &t.nrm[i],
-            6 => &t.cur_gi,
-            7 => &t.hist_dir[i],
-            8 => &t.tmp[0],
             _ => &t.taa[i],
         };
         let g_blit = bind(
@@ -728,22 +736,14 @@ impl Renderer {
             cp.set_bind_group(1, &g_sky, &[]);
             cp.dispatch_workgroups(16, 8, 1);
             cp.set_bind_group(0, &scene, &[]);
-            for (pass, g) in [(&self.trace, &g_trace), (&self.light, &g_light), (&self.accum, &g_accum)] {
+            let passes: &[(&Pass, &wgpu::BindGroup)] = if self.debug_view == 99 {
+                &[(&self.trace, &g_trace)]
+            } else {
+                &[(&self.trace, &g_trace), (&self.shade, &g_shade), (&self.taa, &g_taa)]
+            };
+            for (pass, g) in passes {
                 cp.set_pipeline(&pass.pipeline);
-                cp.set_bind_group(1, g, &[]);
-                cp.dispatch_workgroups(gx, gy, 1);
-                if self.debug_view == 99 {
-                    break;
-                }
-            }
-            cp.set_pipeline(&self.atrous.pipeline);
-            for g in &g_at {
-                cp.set_bind_group(1, g, &[]);
-                cp.dispatch_workgroups(gx, gy, 1);
-            }
-            for (pass, g) in [(&self.composite, &g_comp), (&self.taa, &g_taa)] {
-                cp.set_pipeline(&pass.pipeline);
-                cp.set_bind_group(1, g, &[]);
+                cp.set_bind_group(1, *g, &[]);
                 cp.dispatch_workgroups(gx, gy, 1);
             }
         }

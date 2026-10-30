@@ -1,4 +1,4 @@
-// Pass 7 — present: exposure, a soft bloom tap, AgX tonemap, sRGB encode (when the target
+// Pass 4 — present: exposure, a soft bloom tap, AgX tonemap, sRGB encode (when the target
 // isn't an *-srgb format), and a little dither against banding.
 
 struct Present {

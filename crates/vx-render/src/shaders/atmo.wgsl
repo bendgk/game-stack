@@ -43,7 +43,8 @@ fn sun_color() -> vec3<f32> {
 }
 
 fn moon_light() -> vec3<f32> {
-    return vec3<f32>(0.06, 0.08, 0.13) * u.params.w;
+    // Moon + sky glow: enough to read shapes at night (blue hour), not enough to look like day.
+    return vec3<f32>(0.10, 0.13, 0.22) * u.params.w;
 }
 
 /// Sky radiance in direction d (steps = quality). Expensive: used to fill the sky LUT.

@@ -15,6 +15,10 @@ use std::fmt::Debug;
 /// A player slot in a room. Stable for the room's lifetime (survives reconnects).
 pub type PlayerId = u16;
 
+/// The id commands issued by the server itself carry (`Authority::server_command`). Never a
+/// seat: games that accept server commands check for it explicitly.
+pub const SERVER: PlayerId = PlayerId::MAX;
+
 /// How a room was created; known to both server and clients before tick 0.
 #[derive(Wire, Clone, Debug, PartialEq, Eq, Default)]
 pub struct Setup {

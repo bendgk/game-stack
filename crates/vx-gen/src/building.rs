@@ -370,7 +370,23 @@ pub fn emit(b: &BuildingSpec, ground: i32, mods: &Modules, lit_share: f32, out: 
                     vx_core::AIR
                 }
             },
-            classify: |_| vx_core::Class::Mixed,
+            // The roof is a 10-voxel shell under the gable line: decide whole cubes from the
+            // range of that line over the cube, so only voxels on the shell's surface are sampled.
+            classify: move |c: Aabb| {
+                let (lo, hi) =
+                    if along_x { (c.min.z - cz, c.max.z - 1 - cz) } else { (c.min.x - cx, c.max.x - 1 - cx) };
+                let dmin = if lo <= 0 && hi >= 0 { 0 } else { lo.abs().min(hi.abs()) } as f32;
+                let dmax = lo.abs().max(hi.abs()) as f32;
+                let (hmax, hmin) = ((half + 16.0 - dmin) * 0.9, (half + 16.0 - dmax) * 0.9);
+                let (y0, y1) = ((c.min.y - top) as f32, (c.max.y - 1 - top) as f32);
+                if y0 >= hmax || y1 <= hmin - 10.0 {
+                    vx_core::Class::Empty
+                } else if snow.is_none() && y1 < hmin && y0 > hmax - 10.0 {
+                    vx_core::Class::Solid(roof_m)
+                } else {
+                    vx_core::Class::Mixed
+                }
+            },
         }));
     }
 }

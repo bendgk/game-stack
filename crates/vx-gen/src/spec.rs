@@ -47,10 +47,59 @@ impl Style {
     }
 }
 
+/// The land under (or instead of) the city.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Landscape {
+    /// Flat ground: just the city.
+    #[default]
+    Flat,
+    Hills,
+    Mountains,
+    Island,
+    Canyons,
+    Mesas,
+    /// Minecraft-style block terrain.
+    Blocky,
+}
+
+impl Landscape {
+    pub const ALL: [Landscape; 7] = [
+        Landscape::Flat,
+        Landscape::Hills,
+        Landscape::Mountains,
+        Landscape::Island,
+        Landscape::Canyons,
+        Landscape::Mesas,
+        Landscape::Blocky,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Landscape::Flat => "flat",
+            Landscape::Hills => "hills",
+            Landscape::Mountains => "mountains",
+            Landscape::Island => "island",
+            Landscape::Canyons => "canyons",
+            Landscape::Mesas => "mesas",
+            Landscape::Blocky => "blocky",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SceneSpec {
     pub title: String,
+    /// The land: `flat` (city only) or a generated, eroded terrain around / instead of it.
+    pub landscape: Landscape,
+    /// Build a city (on a plateau when the landscape isn't flat).
+    pub city: bool,
+    /// 0..1: terrain height, relative to the landscape's natural relief.
+    pub relief: f32,
+    /// 0..1: hydraulic erosion strength (gullies, river valleys, sediment fans).
+    pub erosion: f32,
+    /// 0..1: forest cover on natural terrain.
+    pub forest: f32,
     pub seed: u64,
     pub style: Style,
     /// City extent (metres, square). 256–2048.
@@ -90,6 +139,11 @@ impl Default for SceneSpec {
     fn default() -> Self {
         SceneSpec {
             title: "Untitled city".into(),
+            landscape: Landscape::Flat,
+            city: true,
+            relief: 0.5,
+            erosion: 0.6,
+            forest: 0.5,
             seed: 1,
             style: Style::Modern,
             size_m: 768.0,
@@ -132,6 +186,9 @@ impl SceneSpec {
             &mut self.trees,
             &mut self.fog,
             &mut self.lit_windows,
+            &mut self.relief,
+            &mut self.erosion,
+            &mut self.forest,
         ] {
             *v = c01(*v);
         }
@@ -146,6 +203,9 @@ impl SceneSpec {
             self.accent_color = None;
         }
         self.extra_props.truncate(16);
+        if self.landscape == Landscape::Flat {
+            self.city = true; // a flat empty world has nothing in it
+        }
         self
     }
 

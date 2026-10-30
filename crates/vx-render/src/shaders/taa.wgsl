@@ -1,6 +1,6 @@
-// Pass 6 — TAA: reproject last frame's resolved image (surfaces by world position, sky by
-// direction), clamp it to the current 3×3 neighbourhood in YCoCg, blend. Resolves the
-// subpixel jitter, stochastic LOD, and the remaining lighting noise.
+// Pass 3 — TAA: reproject last frame's resolved image (surfaces by world position, sky by
+// direction), clamp it to the current 3×3 neighbourhood in YCoCg, blend. Shading is
+// deterministic, so this only resolves the subpixel jitter (anti-aliasing).
 
 @group(1) @binding(0) var g_pos: texture_2d<f32>;
 @group(1) @binding(1) var hdr: texture_2d<f32>;

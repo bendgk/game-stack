@@ -20,14 +20,14 @@ pub mod render;
 pub mod rng;
 pub mod testkit;
 
-pub use game::{Events, Frame, FrameOf, Game, Join, MatchResult, PlayerId, Setup};
+pub use game::{Events, Frame, FrameOf, Game, Join, MatchResult, PlayerId, SERVER, Setup};
 pub use gs_wire::{self as wire, Wire};
 pub use render::{RenderEntity, RenderView};
 pub use rng::Rng;
 
 /// Everything a game file usually needs.
 pub mod prelude {
-    pub use crate::game::{Events, FrameOf, Game, Join, MatchResult, PlayerId, Setup};
+    pub use crate::game::{Events, FrameOf, Game, Join, MatchResult, PlayerId, SERVER, Setup};
     pub use crate::math::{self, Quat, Vec2, Vec3, vec2, vec3};
     pub use crate::render::{FLAG_HIDDEN, FLAG_ME, FLAG_TELEPORT, FLAG_USER, RenderEntity, RenderView};
     pub use crate::rng::Rng;

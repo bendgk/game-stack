@@ -5,7 +5,7 @@
 //! sensible spec from the same prompt, so every other part of the engine works model-free.
 //! It's also the safety net if a model returns something unusable.
 
-use crate::spec::{SceneSpec, Style};
+use crate::spec::{Landscape, SceneSpec, Style};
 
 fn has(p: &str, words: &[&str]) -> bool {
     words.iter().any(|w| p.contains(w))
@@ -105,6 +105,65 @@ pub fn spec_from_prompt(prompt: &str) -> SceneSpec {
     if has(&p, &["clear", "crisp"]) {
         s.fog = 0.1;
     }
+    // The land.
+    s.landscape = if has(&p, &["minecraft", "blocky", "block world", "voxel terrain", "cubes"]) {
+        Landscape::Blocky
+    } else if has(&p, &["island", "archipelago", "atoll"]) {
+        Landscape::Island
+    } else if has(&p, &["mountain", "alps", "alpine", "peak", "himalaya", "rockies", "valley"]) {
+        Landscape::Mountains
+    } else if has(&p, &["canyon", "gorge", "ravine"]) {
+        Landscape::Canyons
+    } else if has(&p, &["mesa", "badlands", "plateau", "monument valley"]) {
+        Landscape::Mesas
+    } else if has(
+        &p,
+        &[
+            "hill",
+            "countryside",
+            "rolling",
+            "meadow",
+            "forest",
+            "woods",
+            "nature",
+            "wilderness",
+            "landscape",
+            "terrain",
+        ],
+    ) {
+        Landscape::Hills
+    } else {
+        Landscape::Flat
+    };
+    let wild = has(
+        &p,
+        &[
+            "wilderness",
+            "untouched",
+            "no city",
+            "no buildings",
+            "nature only",
+            "empty",
+            "landscape",
+            "terrain",
+            "forest",
+            "woods",
+        ],
+    );
+    let urban = has(&p, &["city", "town", "village", "street", "downtown", "buildings", "metropolis", "settlement"]);
+    s.city = s.landscape == Landscape::Flat || urban || !wild;
+    if s.landscape == Landscape::Blocky && !urban {
+        s.city = false;
+    }
+    if has(&p, &["forest", "woods", "jungle", "taiga", "trees"]) {
+        s.forest = 0.9;
+    }
+    if has(&p, &["eroded", "rivers", "gullies", "weathered"]) {
+        s.erosion = 0.9;
+    }
+    if has(&p, &["huge mountains", "towering", "epic", "dramatic", "jagged"]) {
+        s.relief = 0.9;
+    }
     s.sanitized()
 }
 
@@ -122,5 +181,129 @@ mod tests {
         assert!(b.water > 0.3 && b.height_max_m <= 20.0 && (17.0..20.0).contains(&b.time_of_day));
         assert_eq!(spec_from_prompt("x").seed, spec_from_prompt("x").seed);
         assert_ne!(spec_from_prompt("x").seed, spec_from_prompt("y").seed);
+    }
+}
+
+/// The scene-writing guide given to language models (local, Claude Code, or an MCP client):
+/// what a `SceneSpec` is, every field and its range, and examples. Ask for JSON only.
+pub fn guide() -> String {
+    let styles: Vec<&str> = Style::ALL.iter().map(|s| s.name()).collect();
+    let lands: Vec<&str> = Landscape::ALL.iter().map(|l| l.name()).collect();
+    let props: Vec<&str> = crate::props::CATALOG.iter().map(|p| p.name).collect();
+    format!(
+        r##"You design scenes for voxelscape, a procedural voxel world generator. Turn the user's request into ONE JSON object (a SceneSpec). Output only the JSON, no prose, no code fences.
+
+Fields (all optional; anything missing gets a sensible default; values are clamped):
+- "title": short name for the scene (string)
+- "seed": integer; change it for a different layout of the same idea
+- "landscape": one of {lands:?}. "flat" = only a city on flat ground; the others generate eroded natural terrain ("blocky" = Minecraft-style blocks)
+- "city": true/false: build a city (on a plateau when the landscape isn't flat). Use false for pure nature
+- "style": one of {styles:?} (architecture and materials)
+- "size_m": 256..2048, side of the city (or of the terrain when city=false), metres
+- "density": 0..1 how built-up; "downtown": 0..1 how strongly towers cluster in the centre
+- "height_min_m", "height_max_m": building heights in metres (4..480)
+- "parks", "plazas", "water", "grid", "props", "trees": 0..1 (grid 1 = Manhattan, 0 = organic streets)
+- "relief": 0..1 terrain height; "erosion": 0..1 rivers and gullies; "forest": 0..1 tree cover on terrain
+- "time_of_day": 0..24 hours (sun position; at night windows and lamps light up)
+- "fog": 0..1 haze; "lit_windows": 0..1 share of lit windows at night
+- "wall_colors": up to 8 "#rrggbb" facade colours; "accent_color": "#rrggbb"
+- "extra_props": prop names to scatter, from: {props:?}
+
+Guidance: match the mood (time_of_day, fog, style) and the scale (size_m, heights) to the request. Small towns: size_m 256-512, height_max_m 12-30. Big cities: 1024-2048 with tall towers. Nature scenes: city false, pick a landscape, raise forest, erosion and relief as described.
+
+Example: "a rainy neon megacity at night" -> {{"title":"Neon Megacity","landscape":"flat","city":true,"style":"cyberpunk","size_m":1536,"density":0.9,"downtown":0.9,"height_min_m":20,"height_max_m":400,"time_of_day":22.5,"fog":0.7,"lit_windows":0.8,"water":0.15,"grid":0.85}}
+Example: "a quiet alpine village in the mountains at sunrise" -> {{"title":"Alpine Village","landscape":"mountains","city":true,"style":"snow","size_m":384,"density":0.5,"height_min_m":6,"height_max_m":14,"relief":0.8,"erosion":0.8,"forest":0.7,"time_of_day":6.8,"fog":0.35}}
+Example: "untouched eroded canyon wilderness at golden hour" -> {{"title":"Canyon Wilds","landscape":"canyons","city":false,"size_m":2048,"relief":0.7,"erosion":0.9,"forest":0.3,"time_of_day":18.2,"fog":0.25}}"##
+    )
+}
+
+/// Merge a model's JSON reply onto a base spec (the keyword parser's spec for the same prompt,
+/// or the current scene when refining): fields the model set win, everything else keeps the
+/// base. Tolerates prose, code fences and `<think>` blocks around the object, and ignores
+/// unknown or badly typed fields.
+pub fn merge_reply(prompt: &str, reply: &str, base: Option<&SceneSpec>) -> Result<SceneSpec, String> {
+    let start = match base {
+        Some(b) => b.clone(),
+        None => spec_from_prompt(prompt),
+    };
+    let text = match reply.rfind("</think>") {
+        Some(e) => &reply[e + 8..],
+        None => reply,
+    };
+    let obj = extract_object(text).ok_or("no JSON object in the reply")?;
+    let patch: serde_json::Value = serde_json::from_str(obj).map_err(|e| e.to_string())?;
+    let serde_json::Value::Object(patch) = patch else { return Err("reply is not an object".into()) };
+    let serde_json::Value::Object(mut fields) = serde_json::to_value(&start).map_err(|e| e.to_string())? else {
+        return Err("spec is not an object".into());
+    };
+    for (k, val) in patch {
+        if !fields.contains_key(&k) {
+            continue;
+        }
+        let mut trial = fields.clone();
+        trial.insert(k.clone(), val.clone());
+        if serde_json::from_value::<SceneSpec>(serde_json::Value::Object(trial)).is_ok() {
+            fields.insert(k, val);
+        }
+    }
+    serde_json::from_value::<SceneSpec>(serde_json::Value::Object(fields))
+        .map(|s| s.sanitized())
+        .map_err(|e| e.to_string())
+}
+
+/// The first balanced `{...}` in `s` (aware of strings).
+fn extract_object(s: &str) -> Option<&str> {
+    let start = s.find('{')?;
+    let (mut depth, mut in_str, mut esc) = (0i32, false, false);
+    for (i, c) in s[start..].char_indices() {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[start..start + i + 1]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod harness_tests {
+    use super::*;
+
+    #[test]
+    fn replies_merge_onto_prompt_defaults() {
+        let r = "<think>hmm {not json}</think>Sure! ```json\n{\"style\": \"snow\", \"landscape\": \"mountains\", \"height_max_m\": \"tall\", \"title\": \"A {braced} \\\"name\\\"\", \"bogus\": 1}\n```";
+        let s = merge_reply("a village", r, None).unwrap();
+        assert_eq!(s.style, Style::Snow);
+        assert_eq!(s.landscape, Landscape::Mountains);
+        assert_eq!(s.title, "A {braced} \"name\"");
+        assert_eq!(s.height_max_m, spec_from_prompt("a village").height_max_m, "badly typed field ignored");
+        assert!(merge_reply("x", "no json here", None).is_err());
+        assert!(guide().contains("crate_wood"));
+    }
+
+    #[test]
+    fn nature_prompts_skip_the_city() {
+        let s = spec_from_prompt("an untouched eroded mountain wilderness with forests");
+        assert_eq!(s.landscape, Landscape::Mountains);
+        assert!(!s.city);
+        let s = spec_from_prompt("a medieval town in the hills");
+        assert_eq!(s.landscape, Landscape::Hills);
+        assert!(s.city);
     }
 }
