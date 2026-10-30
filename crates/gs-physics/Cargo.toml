@@ -1,0 +1,11 @@
+[package]
+name = "gs-physics"
+description = "Optional deterministic physics for game-stack games: one engine, 2D (Vec2) and 3D (Vec3) modes"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+gs-wire.workspace = true
+glam.workspace = true

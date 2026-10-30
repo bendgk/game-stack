@@ -17,6 +17,14 @@ Fork it, change the example game, and have friends join from their laptops and p
 - **React 19 + React Three Fiber 9 + three.js r187 (WebGPU)** for rendering and UI. TypeScript
   types are *generated from Rust*, so the client can't drift from the server.
 
+- **Optional deterministic physics, 2D and 3D** (`crates/gs-physics`): one engine, two modes
+  (`gs_physics::d2` / `d3`): balls, boxes, ramps/planes, sensors, moving platforms, joints,
+  ray casts. Use it, swap it, or skip it.
+- **AI asset studios as MCP servers** in the repo: `gs3d` (headless Blender: model, rig,
+  measure, export GLB) and `gs2d` (sprites, animations, tiles, icons → sprite sheets, pure
+  Node). Your coding agent makes art that's checked against your game's player size, camera
+  and background.
+
 Supports single-player, co-op and versus out of the box, with server-side bots to fill seats.
 
 ```
@@ -69,6 +77,7 @@ Everything game-specific lives in two places:
 | ------------------------------------------- | -------------------------------------- |
 | rules, state, physics, scoring, bots        | `crates/game/src/*.rs`                 |
 | what things look like, UI, sounds, controls | `apps/web/src/game/*`                  |
+| 2D / 3D art                                 | ask your agent: the `gs2d` / `gs3d` MCP servers (below) |
 | the lobby / menus                           | `apps/web/src/lobby/Lobby.tsx`         |
 | database tables                             | `migrations/*.sql` + `crates/gs-server/src/db.rs` |
 
@@ -99,6 +108,31 @@ The engine (`crates/gs-core`, `crates/gs-wire`, `crates/gs-server`, `crates/gs-c
 Then try the recipes in [`docs/RECIPES.md`](docs/RECIPES.md): new input buttons, new entity
 kinds, commands, events and effects, HUD fields, game modes, persistence.
 
+### 2D or 3D?
+
+The example is 3D, but the stack is dimension-agnostic. For a 2D game: use `gs_physics::d2`
+in Rust, place entities with `RenderEntity::new2d(...)`, and on the client use
+`<GameCanvas orthographic>` + `<Camera2D />` + `<Sprite sheet=… anim=… />`. Recipe:
+[`docs/RECIPES.md#make-a-2d-game`](docs/RECIPES.md#make-a-2d-game). For a runnable 2D physics
+scene: `cargo run -p gs-physics --example platformer2d`.
+
+### Make art with your agent (MCP)
+
+`.mcp.json` registers two asset studios, so Claude Code (or any MCP client) opened in this
+repo can use them right away. Skills in `.claude/skills/` teach the workflow.
+
+| Server | What | Needs |
+| --- | --- | --- |
+| `gs2d` (`tools/mcp-2d`) | sprites, animations, tiles, icons, emotes, FX → PNG + sprite-sheet JSON for `<Sprite>` | Node only |
+| `gs3d` (`tools/mcp-3d`) | props, characters, buildings in a toon look; rigging → GLB | [Blender 5.x](https://www.blender.org/download/) |
+
+Both measure what they make against **your** game. Run their `configure` tool once with your
+player size, camera and background. Both render previews the agent looks at, and both have
+`lint`/`gate` probes (readability, scale vs the player, seams, floating/buried parts…). Try:
+*"Using gs2d, make a 4-frame spinning coin pickup for Orb Arena and export it to
+apps/web/public/sprites/coin.json."* The emote bubbles in the example game were made this way
+(`assets/2d/emotes.gs2d.json`).
+
 ### Three rules that keep multiplayer working
 
 1. **The sim must be deterministic.** Use `gs_core::math` (not `f32::sin`), `gs_core::Rng`
@@ -112,7 +146,7 @@ kinds, commands, events and effects, HUD fields, game modes, persistence.
 
 ```sh
 cargo test -p game     # your rules + the full netcode path over simulated bad networks
-pnpm verify            # everything: fmt, clippy, tests, contract, wasm, types, determinism
+pnpm verify            # everything: fmt, clippy, tests, contract, wasm, types, MCP tests, determinism
 pnpm netbot -- --room test --clients 4 --seconds 20   # headless players over real WebRTC
 pnpm e2e               # drives your installed Chrome against `pnpm dev`
 ```
@@ -144,14 +178,20 @@ The long version, with diagrams: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 crates/
   gs-wire/          binary codec + #[derive(Wire)] + schema fingerprints (the contract)
   gs-wire-derive/   the derive macro
-  gs-core/          engine: Game trait, math, rng, physics, netcode (authority, predictor,
+  gs-core/          engine: Game trait, math, rng, netcode (authority, predictor,
                     room host, delta, link sim), headless Env, testkit
+  gs-physics/       OPTIONAL deterministic physics: one engine, 2D (d2) + 3D (d3) modes
   game/             ★ YOUR GAME (Orb Arena example)
   gs-server/        the server binary: WebRTC, room actors, Dragonfly, Postgres, HTTP
                     + bin/netbot.rs (headless WebRTC players)
   gs-client/        wasm bindings for the browser (also an in-browser LocalServer)
 packages/engine/    @gs/engine: transport, session, input, React hooks, R3F primitives
 apps/web/           ★ YOUR CLIENT: lobby, scene, renderers, HUD, input mapping, sfx
+  public/sprites/   sprite sheets exported by gs2d   (public/models/ for gs3d GLBs)
+assets/2d/          editable gs2d project files (the source of exported sprites)
+tools/mcp-2d/       gs2d MCP server: 2D asset studio (pure Node)
+tools/mcp-3d/       gs3d MCP server: 3D asset studio (headless Blender)
+.mcp.json           registers both servers for Claude Code / MCP clients
 migrations/         Postgres schema
 contract/           generated wire contract (checked in)
 scripts/            dev, build-wasm, verify, contract, stack, e2e, setup
@@ -167,6 +207,7 @@ docs/               ARCHITECTURE.md, RECIPES.md
 | Rubber-banding in one place | Something in `step` is non-deterministic or reads state that isn't in the struct. Run `pnpm verify` and look at the solo prediction test (`netcode_solo_prediction_is_exact`). |
 | Black screen on another device | WebGPU needs a secure context. Over `http://<ip>` three.js falls back to WebGL2 automatically, so check the browser console for other errors. |
 | No leaderboard | Postgres isn't running (start Docker), or `DATABASE_URL` is unset. |
+| `gs3d` tools fail to start | Install Blender 5.x (or set `GS3D_BLENDER=/path/to/blender`). `gs2d` needs nothing. |
 | Port already in use | Another `pnpm dev`/`pnpm stack` is running. `pnpm stack down` stops the Docker one. |
 
 Configuration lives in environment variables; see [`.env.example`](.env.example).

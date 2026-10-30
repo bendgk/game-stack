@@ -14,11 +14,12 @@
     "build": "node scripts/build-wasm.mjs --release && pnpm --filter web build && cargo build --release -p gs-server",
     "stack": "node scripts/stack.mjs",
     "typecheck": "pnpm -r typecheck",
-    "test": "cargo test --workspace && pnpm -r test",
+    "test": "cargo test --workspace && pnpm -r test && pnpm test:mcp",
     "verify": "node scripts/verify.mjs",
     "contract": "node scripts/contract.mjs --write",
     "netbot": "cargo run -q -p gs-server --bin netbot --",
-    "e2e": "node scripts/e2e.mjs"
+    "e2e": "node scripts/e2e.mjs",
+    "test:mcp": "node --test tools/mcp-2d/lib.test.mjs tools/mcp-3d/lib.test.mjs"
   },
   "devDependencies": {
     "playwright-core": "1.64.1"

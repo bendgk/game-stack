@@ -1,0 +1,29 @@
+# Determinism guard rails for everything a sim can call. The client (wasm32) and the server
+# (native) must compute bit-identical results; these are the usual ways that silently breaks.
+# Use `gs_core::math::*` instead (pure-Rust libm, identical on every target).
+disallowed-methods = [
+  { path = "f32::sin", reason = "platform libm differs across targets; use gs_core::math::sin" },
+  { path = "f32::cos", reason = "use gs_core::math::cos" },
+  { path = "f32::tan", reason = "use gs_core::math::tan" },
+  { path = "f32::sin_cos", reason = "use gs_core::math::sin_cos" },
+  { path = "f32::asin", reason = "use gs_core::math::asin" },
+  { path = "f32::acos", reason = "use gs_core::math::acos" },
+  { path = "f32::atan", reason = "use gs_core::math::atan" },
+  { path = "f32::atan2", reason = "use gs_core::math::atan2" },
+  { path = "f32::exp", reason = "use gs_core::math::exp" },
+  { path = "f32::ln", reason = "use gs_core::math::ln" },
+  { path = "f32::log10", reason = "use gs_core::math::ln" },
+  { path = "f32::log2", reason = "use gs_core::math::ln" },
+  { path = "f32::powf", reason = "use gs_core::math::powf" },
+  { path = "f32::hypot", reason = "use gs_core::math::hypot" },
+  { path = "f32::mul_add", reason = "fused ops are not portable; write a * b + c" },
+  { path = "f64::sin", reason = "use gs_core::math" },
+  { path = "f64::cos", reason = "use gs_core::math" },
+  { path = "f64::powf", reason = "use gs_core::math" },
+  { path = "std::time::Instant::now", reason = "wall-clock in a sim breaks determinism; time is the tick" },
+  { path = "std::time::SystemTime::now", reason = "wall-clock in a sim breaks determinism; time is the tick" },
+]
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "random iteration order; use BTreeMap or Vec" },
+  { path = "std::collections::HashSet", reason = "random iteration order; use BTreeSet or Vec" },
+]

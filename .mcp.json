@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "gs2d": {
+      "command": "node",
+      "args": ["tools/mcp-2d/server.mjs"]
+    },
+    "gs3d": {
+      "command": "node",
+      "args": ["tools/mcp-3d/server.mjs"]
+    }
+  }
+}

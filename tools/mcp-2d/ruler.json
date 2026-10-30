@@ -1,0 +1,8 @@
+{
+  "ppu": 32,
+  "screen_ppu": 48,
+  "avatar_w": 1,
+  "avatar_h": 1,
+  "background": "#0f1324",
+  "palette_budget": 24
+}

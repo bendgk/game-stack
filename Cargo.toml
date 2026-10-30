@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-default-members = ["crates/gs-wire", "crates/gs-wire-derive", "crates/gs-core", "crates/game", "crates/gs-server"]
+default-members = ["crates/gs-wire", "crates/gs-wire-derive", "crates/gs-core", "crates/gs-physics", "crates/game", "crates/gs-server"]
 
 
 [workspace.package]
@@ -14,6 +14,7 @@ publish = false
 gs-wire = { path = "crates/gs-wire" }
 gs-wire-derive = { path = "crates/gs-wire-derive" }
 gs-core = { path = "crates/gs-core" }
+gs-physics = { path = "crates/gs-physics" }
 game = { path = "crates/game" }
 
 # Deterministic math: `libm` routes every transcendental through pure-Rust libm and

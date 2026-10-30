@@ -6,7 +6,7 @@
 //   4. contract drift check
 //   5. wasm build + TypeScript typecheck (Rust type changes surface here as TS errors)
 //   6. determinism: the probe hash must be identical natively and in wasm
-//   7. TS tests
+//   7. TS tests + the asset MCP servers' tests
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -32,6 +32,7 @@ step('contract', 'node', ['scripts/contract.mjs', '--check']);
 step('wasm build', 'node', ['scripts/build-wasm.mjs']);
 step('typecheck', 'pnpm', ['-r', '--silent', 'typecheck']);
 step('ts tests', 'pnpm', ['-r', '--silent', 'test']);
+step('mcp tests (gs2d, gs3d)', 'node', ['--test', 'tools/mcp-2d/lib.test.mjs', 'tools/mcp-3d/lib.test.mjs']);
 
 process.stdout.write('\x1b[36m▶ determinism (native == wasm)\x1b[0m\n');
 const native = step('native probe', 'cargo', ['run', '-q', '-p', 'gs-server', '--', 'probe'], { capture: true }).trim();

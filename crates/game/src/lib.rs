@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 
 use gs_core::prelude::*;
+use gs_physics::d3::{Body, BodyId, Shape, World};
 use serde::{Deserialize, Serialize};
 
 mod arena;
@@ -227,7 +228,7 @@ impl OrbArena {
     fn spawn_point(&mut self) -> Vec3 {
         for _ in 0..16 {
             let p = vec3(self.rng.range_f32(-12.0, 12.0), 1.2, self.rng.range_f32(-12.0, 12.0));
-            if self.world.overlap_sphere(p, 1.0, u32::MAX).is_empty() {
+            if self.world.overlap_ball(p, 1.0, u32::MAX).is_empty() {
                 return p;
             }
         }
@@ -238,7 +239,7 @@ impl OrbArena {
         let mut p = self.spawn_point();
         p.y = 0.9;
         let eid = self.eid();
-        let body = self.world.add(Body::sensor(Shape::Sphere { r: ORB_RADIUS }, p).with_user(TAG_ORB | eid));
+        let body = self.world.add(Body::sensor(Shape::Ball { r: ORB_RADIUS }, p).with_user(TAG_ORB | eid));
         self.orbs.push(Orb { eid, body });
     }
 
@@ -292,7 +293,7 @@ impl OrbArena {
         let pos = self.spawn_point();
         let eid = self.eid();
         let body = self.world.add(
-            Body::dynamic(Shape::Sphere { r: PLAYER_RADIUS }, pos)
+            Body::dynamic(Shape::Ball { r: PLAYER_RADIUS }, pos)
                 .with_friction(0.2)
                 .with_restitution(0.3)
                 .with_user(TAG_PLAYER | u32::from(j.id)),
@@ -423,7 +424,7 @@ impl Game for OrbArena {
             next_eid: 0,
             result: None,
         };
-        g.world.floor = Some(0.0);
+        g.world.add(Body::floor(0.0).with_friction(0.3));
         arena::build(&mut g);
         g
     }

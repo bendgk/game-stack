@@ -89,6 +89,12 @@ try {
     check(d < 1.5, `online: bob sees alice within ${d.toFixed(2)} units of where she is`);
     check(p1.errors.length + p2.errors.length === 0, `online: no page errors ${[...p1.errors, ...p2.errors].join(' | ')}`);
     console.log('  alice stats', JSON.stringify(b1.stats));
+    // Emotes: a reliable Command → server tick → state → the gs2d sprite billboard.
+    await p1.page.keyboard.press('Digit1');
+    await p1.page.waitForFunction(() => window.__gs.entities.me?.b === 1, null, { timeout: 3000 });
+    const sheetOk = await p1.page.evaluate(async () => (await fetch('/sprites/emotes.json')).ok);
+    check(sheetOk, 'online: emote command round-trips and its sprite sheet is served');
+    await p1.page.waitForTimeout(400);
     await p1.page.screenshot({ path: `${shots}/online-alice.png` });
     await p2.page.screenshot({ path: `${shots}/online-bob.png` });
   }

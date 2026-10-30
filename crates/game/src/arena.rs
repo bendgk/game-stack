@@ -2,6 +2,7 @@
 
 use super::{Kind, OrbArena, Prop};
 use gs_core::prelude::*;
+use gs_physics::d3::{Body, Shape};
 
 const HALF: f32 = 15.0;
 

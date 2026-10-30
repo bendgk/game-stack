@@ -17,6 +17,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  use,
   useState,
   type ComponentProps,
   type ComponentType,
@@ -178,4 +179,130 @@ export function FollowCamera({ distance = 7.5, height = 1.0, stiffness = 12 }: {
     camera.lookAt(target);
   }, -1);
   return null;
+}
+
+// --- 2D --------------------------------------------------------------------------------------
+
+/**
+ * Orthographic camera for 2D games (`<GameCanvas orthographic>`): looks down -Z at the XY
+ * plane and follows the local player. `zoom` = screen pixels per world unit.
+ */
+export function Camera2D({ zoom = 48, follow = true, stiffness = 10 }: { zoom?: number; follow?: boolean; stiffness?: number }) {
+  const session = useSession();
+  const camera = useThree((s) => s.camera);
+  useEffect(() => {
+    camera.position.set(0, 0, 100);
+    camera.lookAt(0, 0, 0);
+    camera.zoom = zoom;
+    camera.updateProjectionMatrix();
+  }, [camera, zoom]);
+  useFrame((_, dt) => {
+    const me = session.entities.me;
+    if (!follow || !me) return;
+    const k = 1 - Math.exp(-stiffness * dt);
+    camera.position.x += (me.pos[0] - camera.position.x) * k;
+    camera.position.y += (me.pos[1] - camera.position.y) * k;
+  }, -1);
+  return null;
+}
+
+/** A sprite sheet as written by the gs2d MCP (`export_sheet`): one PNG + this JSON. */
+export interface SpriteSheet {
+  image: string;
+  size: [number, number];
+  /** Pixels per world unit the art was drawn at. */
+  ppu: number;
+  frames: Record<string, { x: number; y: number; w: number; h: number; pivot: [number, number] }>;
+  animations: Record<string, { frames: string[]; fps: number; loop: boolean }>;
+}
+
+const sheets = new Map<string, Promise<{ sheet: SpriteSheet; texture: THREE.Texture }>>();
+const tmpQ = new THREE.Quaternion();
+
+/** Load (once, cached) a sprite sheet JSON and its texture. Suspends while loading. */
+export function loadSpriteSheet(url: string) {
+  let p = sheets.get(url);
+  if (!p) {
+    p = (async () => {
+      const sheet = (await (await fetch(url)).json()) as SpriteSheet;
+      const imageUrl = new URL(sheet.image, new URL(url, location.href)).href;
+      const texture = await new THREE.TextureLoader().loadAsync(imageUrl);
+      texture.magFilter = THREE.NearestFilter; // crisp pixel art
+      texture.minFilter = THREE.NearestFilter;
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.generateMipmaps = false;
+      return { sheet, texture };
+    })();
+    sheets.set(url, p);
+  }
+  return p;
+}
+
+export function useSpriteSheet(url: string) {
+  return use(loadSpriteSheet(url));
+}
+
+/**
+ * Draw one frame or an animation from a sprite sheet on a quad facing +Z.
+ * `size` (world units) defaults to the frame's pixel size / `ppu`; pass `size={[1, 1]}` when
+ * the entity's scale already carries the size (`RenderEntity::size2d`). Wrap in <Suspense>.
+ */
+export function Sprite({
+  sheet: url,
+  frame,
+  anim,
+  size,
+  flipX = false,
+  tint = 0xffffff,
+  billboard = false,
+}: {
+  sheet: string;
+  frame?: string;
+  anim?: string;
+  size?: [number, number];
+  flipX?: boolean;
+  tint?: number;
+  /** Always face the camera (sprites in a 3D scene). */
+  billboard?: boolean;
+}) {
+  const { sheet, texture } = useSpriteSheet(url);
+  const tex = useMemo(() => {
+    const t = texture.clone();
+    t.needsUpdate = true;
+    return t;
+  }, [texture]);
+  const mesh = useRef<THREE.Mesh>(null);
+  const camera = useThree((s) => s.camera);
+  const first = anim ? sheet.animations[anim]?.frames[0] : frame;
+  const f0 = first ? sheet.frames[first] : undefined;
+  const [w, h] = size ?? (f0 ? [f0.w / sheet.ppu, f0.h / sheet.ppu] : [1, 1]);
+  const start = useMemo(() => performance.now(), []);
+  useFrame(() => {
+    let name = frame;
+    const a = anim ? sheet.animations[anim] : undefined;
+    if (a && a.frames.length) {
+      const i = Math.floor(((performance.now() - start) / 1000) * a.fps);
+      name = a.frames[a.loop ? i % a.frames.length : Math.min(i, a.frames.length - 1)];
+    }
+    const f = name ? sheet.frames[name] : undefined;
+    if (!f) return;
+    const [sw, sh] = sheet.size;
+    tex.repeat.set(((flipX ? -1 : 1) * f.w) / sw, f.h / sh);
+    tex.offset.set((flipX ? f.x + f.w : f.x) / sw, 1 - (f.y + f.h) / sh);
+    if (mesh.current) {
+      mesh.current.position.set((0.5 - f.pivot[0]) * w, (f.pivot[1] - 0.5) * h, 0);
+      if (billboard) {
+        // Face the camera in world space, whatever the parent's rotation.
+        const parent = mesh.current.parent;
+        if (parent) mesh.current.quaternion.copy(parent.getWorldQuaternion(tmpQ).invert().multiply(camera.quaternion));
+        else mesh.current.quaternion.copy(camera.quaternion);
+      }
+    }
+  });
+  return (
+    <mesh ref={mesh}>
+      <planeGeometry args={[w, h]} />
+      <meshBasicMaterial map={tex} color={tint} transparent alphaTest={0.01} toneMapped={false} />
+    </mesh>
+  );
 }

@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 gs-core.workspace = true
 gs-wire.workspace = true
+gs-physics.workspace = true
 game = { workspace = true, features = ["ts"] }
 serde.workspace = true
 wasm-bindgen.workspace = true

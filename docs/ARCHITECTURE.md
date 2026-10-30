@@ -12,12 +12,14 @@ part and why it is shaped the way it is. For "how do I add X", see `RECIPES.md`.
 ┌──────────────────────── crates/gs-core ─────────────────────┐
 │ game.rs    Game trait, Frame, Events, MatchResult            │
 │ math/rng   deterministic f32 math (glam+libm), PCG32         │
-│ physics    spheres + AABBs, sensors, layers, rays            │
 │ net/       proto · server(Authority) · client(Predictor)     │
 │            host(RoomHost) · delta · link(sim) · clock         │
 │ env.rs     headless gym-style Env, determinism probe          │
 │ testkit    soak + replay checks any game can call             │
 └──────────────────────────────┬──────────────────────────────┘
+┌──────── crates/gs-physics (optional, used by the game) ─────┐
+│ one solver, generic over Vector: World<Vec2> | World<Vec3>   │
+└──────────────────────────────────────────────────────────────┘
 ┌──────────────────────── crates/gs-wire ─────────────────────┐
 │ Wire trait + derive, bounded decoder, schema → fingerprint    │
 └──────────────────────────────────────────────────────────────┘
@@ -197,7 +199,53 @@ persistence writer per room, all communicating by message passing. Inside the si
 `gs_core::env::Env` exposes the game gym-style: `set_input` (act), `step`, `game()` (observe),
 `reward` (`Game::reward`, the critic signal).
 
-## 10. Performance notes (defaults)
+## 10. Physics (`gs-physics`, optional)
+
+One engine with two modes. Every algorithm (integration, broadphase, narrow phase, impulse
+solver, joints, ray casts, queries) is written once against the `Vector` trait and instantiated
+as `World<Vec2>` (`gs_physics::d2`) or `World<Vec3>` (`gs_physics::d3`). Y is up in both, so
+gravity, `grounded` and floors read the same. The design follows Quip's engines: an integer
+`PhysicsWorld2D` for exact replays and Jolt for rich 3D. It keeps their determinism discipline
+while staying small enough to read in an afternoon.
+
+- **Shapes:** `Ball` (circle/sphere), axis-aligned `Box`, static `Plane` half-spaces (floors,
+  walls, ramps at any angle). No rotation dynamics: boxes stay axis-aligned, which keeps the
+  solver stable and cheap to clone for rollback.
+- **Bodies:** dynamic, static, kinematic (moves by velocity, carries riders), sensor (overlap
+  only). Layers/masks, restitution, Coulomb friction, damping, gravity scale.
+- **Step:** substeps × (integrate → sort-and-sweep broadphase + every body vs planes →
+  `iterations` × (contacts + joints)). Pairs are sorted, bodies iterate by index, free slots are
+  reused lowest-first: the whole step is a pure function of the state.
+- **Joints:** rod (fixed distance), rope (max distance), spring (stiffness/damping).
+- **Contacts** carry `began` (enter events). The set of touching pairs is part of the state, so
+  enter events agree after a snapshot restore. The test suite checks this.
+- **State:** `World` derives `Wire`, so it sits in your game struct and is snapshotted,
+  delta-compressed, predicted and rolled back with everything else.
+- **Determinism:** `probe::<Vec2>` / `probe::<Vec3>` (a stress scene using every feature) must
+  hash identically natively and in wasm. `pnpm verify` checks it alongside the game probe.
+
+Not using it? Delete the dependency from `crates/game/Cargo.toml` and move things yourself.
+Nothing else in the stack refers to it.
+
+## 11. Asset studios (MCP servers)
+
+`.mcp.json` registers two MCP servers so a coding agent can make the game's art:
+
+- **`gs2d`** (`tools/mcp-2d`, pure Node): a stateful 2D studio. JSON draw ops (shapes, SVG
+  paths, pixel rows, gradients) are filled by a scanline rasterizer with analytic anti-aliasing
+  or crisp pixel mode, then styled with outline, rim shading, palette quantize/dither and grain.
+  Previews show a zoomed contact sheet and the true screen scale on the game background next to
+  the player. Probes cover contrast, scale, palette, alpha, orphans, clipping, tile seams and
+  frame jitter. Output is a PNG atlas + JSON consumed by `<Sprite>`.
+- **`gs3d`** (`tools/mcp-3d`, headless Blender via a localhost bridge): modelling kit, toon
+  look, geometry probes (floating, buried, z-fighting, proportion against the player,
+  sightlines from the play camera), biped/chain rigging, GLB export. Adapted from Quip's
+  `wrld-3d`.
+
+Both read a per-game ruler (`tools/mcp-*/ruler.json`, set with `configure`), so every
+measurement is against this game's player and camera, not a generic human.
+
+## 12. Performance notes (defaults)
 
 60 Hz ticks and snapshots; ~1.8 KB per raw snapshot for the example (8 players, ~25 entities),
 much less after delta. Prediction cost per snapshot is one state hash, plus a 2–4 tick re-sim

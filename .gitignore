@@ -8,3 +8,6 @@ packages/engine/src/wasm/
 .env.local
 .DS_Store
 *.log
+__pycache__/
+*.pyc
+.claude/settings.local.json

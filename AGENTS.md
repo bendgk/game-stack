@@ -20,6 +20,10 @@ matches. Never hand-write a TS type that mirrors a Rust one.
 | Task | Files | Notes |
 | --- | --- | --- |
 | Rules, state, scoring, physics bodies, spawns | `crates/game/src/lib.rs`, `arena.rs` | `Game::step` is the only place state changes |
+| Physics (optional) | `gs_physics::d3` (3D) or `gs_physics::d2` (2D): a `World` field in your game state | engine code in `crates/gs-physics`; tests run every behaviour in both modes |
+| 2D game rendering | `RenderEntity::new2d(..).angle(..).size2d(..)` in Rust; `<GameCanvas orthographic>` + `<Camera2D>` + `<Sprite>` in TS | `docs/RECIPES.md#make-a-2d-game` |
+| 2D art (sprites, tiles, icons, FX) | **`gs2d` MCP** → `apps/web/public/sprites/*.json/png`, source in `assets/2d/*.gs2d.json` | follow `tools/mcp-2d/SKILL.md`; must `gate` before export |
+| 3D art (props, characters, rigs) | **`gs3d` MCP** → `apps/web/public/models/*.glb` | follow `tools/mcp-3d/SKILL.md`; needs Blender; must `gate` before export |
 | Bot behaviour | `crates/game/src/bot.rs` | `Game::bot_input`, deterministic in state |
 | Input fields / buttons | `Input` + `Button` in `crates/game/src/lib.rs`, then `apps/web/src/game/input.ts` | TS errors guide you |
 | New entity kind | `Kind` enum + `render()` in Rust, then `apps/web/src/game/renderers.tsx` | the renderer map is total over `Kind` |
@@ -50,7 +54,8 @@ Step-by-step recipes for each row: `docs/RECIPES.md`. Architecture and the "why"
 4. **Sanitize input in `Game::sanitize`.** It is the server's referee. Clamp every field; treat
    floats as hostile (NaN/inf).
 5. **Never hand-edit generated files:** `packages/engine/src/wasm/*` (run `pnpm build:wasm`),
-   `contract/schema.txt` (run `pnpm contract`).
+   `contract/schema.txt` (run `pnpm contract`), exported sprite sheets (re-export from the
+   `assets/2d/*.gs2d.json` project with gs2d).
 6. **No game traffic over HTTP/WebSocket.** HTTP is for signaling and REST. Gameplay goes through
    the DataChannels via the engine.
 7. **Keep TS a renderer.** If TS needs a number the sim knows, add it to `Hud`, `Event` or the
@@ -74,6 +79,16 @@ More checks when relevant:
 - `pnpm e2e`: drives the installed Chrome against `pnpm dev` (offline + 2-player online) and saves screenshots to `target/e2e/`.
 - In the browser console, `__gs.stats`, `__gs.hud` and `__gs.entities.list` show live session state.
 
+## Making assets (MCP)
+
+The repo's `.mcp.json` provides `gs2d` (2D, pure Node) and `gs3d` (3D, headless Blender).
+Skills: `.claude/skills/gs-2d`, `.claude/skills/gs-3d`. The rules:
+- `configure` once per game (player size, camera, background) so probes measure against the real game.
+- Look at every step (`render`/`preview`/`contact_sheet`). Probes don't see taste.
+- `gate` must pass before export. Keep the editable source (gs2d `save_project` to `assets/2d/`,
+  gs3d `save_blend` to `assets/3d/`).
+- Match sizes with physics: a sprite/GLB that is `h` units tall needs a collider of that size in Rust.
+
 ## Tests to write
 
 - **Every rule:** a headless test in `crates/game/src/tests.rs` using `gs_core::env::Env`
@@ -82,6 +97,10 @@ More checks when relevant:
   `netcode_solo_prediction_is_exact` fails if client and server ever step differently, and
   `durable_log_replays_bit_exactly` fails if replay from Dragonfly would diverge. Keep them green.
 - **Engine changes:** unit tests beside the code. Hostile-input fuzz for anything that decodes bytes.
+  Physics changes: write the test once as a generic `fn x<V: Vector>()` and run it in both
+  modes (`in_both_modes!` in `crates/gs-physics/src/tests.rs`).
+- **MCP server changes:** `node --test tools/mcp-2d/lib.test.mjs tools/mcp-3d/lib.test.mjs`
+  (`GS3D_IT=1` adds real-Blender tests).
 
 ## Diagnosing
 
@@ -101,6 +120,7 @@ More checks when relevant:
 - Comments explain *why*. Match the surrounding density.
 - Keep `crates/game` readable for students: plain structs, small functions, no clever generics.
 - Env vars: declare in `crates/gs-server/src/config.rs` **and** `.env.example`.
-- Don't add dependencies to `crates/game`/`gs-core` that use floats, threads or OS APIs in ways
-  that could differ across targets. Physics engines need cross-platform determinism (for example
-  rapier with `enhanced-determinism`).
+- Don't add dependencies to `crates/game`/`gs-core`/`gs-physics` that use floats, threads or
+  OS APIs in ways that could differ across targets. A different physics engine needs
+  cross-platform determinism (for example rapier with `enhanced-determinism`); the probe in
+  `pnpm verify` checks it.

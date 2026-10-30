@@ -34,7 +34,8 @@ buttons in the player struct and compare inside `step` (that stays deterministic
 ## Add an entity kind (e.g. a bouncing ball)
 
 1. Rust: add `Ball = 5` to `enum Kind`, append `"Ball"` to `KIND_NAMES` and `Kind::Ball` to `Kind::ALL`.
-2. Spawn it (e.g. in `arena.rs`): `g.world.add(Body::dynamic(Shape::Sphere { r: 0.4 }, pos).with_restitution(0.9))`
+2. Spawn it (e.g. in `arena.rs`, with `use gs_physics::d3::{Body, Shape};`):
+   `g.world.add(Body::dynamic(Shape::Ball { r: 0.4 }, pos).with_restitution(0.9))`
    and keep its `BodyId` + an `eid` from `g.eid()` in your state.
 3. In `render`, push it: `view.push(RenderEntity::new(eid, Kind::Ball, pos).color(0xff8800));`
 4. TypeScript now fails in `renderers.tsx` (the map is total over `Kind`). Add a component:
@@ -136,6 +137,59 @@ For in-game chat that everyone sees at the same tick, use a `Command` instead.
 Rehearse bad networks with **Practice offline → net: awful**, or in Rust with
 `gs_core::testkit::soak(…, LinkConfig { latency_ms, jitter_ms, loss }, seconds)`.
 
+## Physics recipes (`gs-physics`)
+
+```rust
+use gs_physics::d3::*;                       // or d2::* for 2D: same API with Vec2
+let floor  = world.add(Body::floor(0.0));
+let ramp   = world.add(Body::plane(vec3(0.0, 0.87, -0.5), Vec3::ZERO));       // 30° slope
+let lift   = world.add(Body::kinematic(Shape::Box { half: vec3(1.0, 0.2, 1.0) }, pos).with_vel(vec3(0.0, 1.0, 0.0)));
+let coin   = world.add(Body::sensor(Shape::Ball { r: 0.4 }, pos));
+let bullet = world.add(Body::dynamic(Shape::Ball { r: 0.1 }, pos).with_vel(dir * 30.0).with_gravity_scale(0.0).with_layers(BULLETS, !BULLETS));
+world.add_joint(Joint { a: anchor, b: lamp, rest: 2.0, kind: JointKind::Rope });
+world.substeps = 2;                           // fast things / tall stacks
+// after world.step(DT):
+for (other, normal) in world.began_contacts_of(coin) { /* enter event */ }
+let hit = world.raycast(eye, aim, 50.0, u32::MAX);       // Option<RayHit>
+let near = world.overlap_ball(center, 3.0, ENEMIES);       // Vec<BodyId>
+```
+Use `body.user` to map a body back to your entity (`with_user(TAG | id)`). Don't want physics?
+Remove `gs-physics` from `crates/game/Cargo.toml` and move things directly in `step`.
+
+## Make a 2D game
+
+1. **Rust:** use `gs_physics::d2::*` (`World::new(vec2(0.0, -30.0))` for a platformer,
+   `World::zero_g()` with `with_damping(8.0)` bodies for top-down). Render with
+   `RenderEntity::new2d(eid, Kind::Hero, pos, z_order).angle(rot).size2d(vec2(w, h))`.
+   Keep `Input` 2D (e.g. `mx`, `my`, buttons). There's no camera yaw to send.
+2. **Client** (`apps/web/src/game/GameView.tsx`):
+   ```tsx
+   <GameCanvas orthographic>
+     <Controls build={buildInput}>
+       <SessionDriver />
+       <Entities renderers={renderers} />
+       <Camera2D zoom={48} />            {/* screen px per world unit */}
+     </Controls>
+   </GameCanvas>
+   ```
+   and draw kinds with sprites: `Hero: () => <Suspense><Sprite sheet="/sprites/hero.json" anim="hero/run" size={[1, 1]} /></Suspense>`
+   (`size={[1,1]}` because `size2d` already scales the entity).
+3. **Art:** make the sprites with the `gs2d` MCP (below), with `configure {screen_ppu: 48}`
+   matching the camera zoom.
+4. Try the physics headless first: `cargo run -p gs-physics --example platformer2d`.
+
+## Make art with the MCP servers
+
+Open Claude Code in the repo. `.mcp.json` starts the servers on demand. Then ask, e.g.:
+- *"Configure gs2d for our game (player 1×1 units, background #0f1324), then make a 6-frame
+  coin spin, gate it, and export to apps/web/public/sprites/coin.json."*
+- *"Configure gs3d (player radius 0.5 m), model a stack of three crates, lint and gate it, and
+  export apps/web/public/models/crates.glb."*
+
+Then use the output: `<Sprite sheet="/sprites/coin.json" anim="coin" billboard />` (in 3D) or
+load the GLB (see `tools/mcp-3d/SKILL.md`). Keep the gs2d project (`assets/2d/*.gs2d.json`) so
+anyone can reopen and tweak the art.
+
 ## Start a different game from scratch
 
 1. In `crates/game/src/lib.rs`, replace `OrbArena` with your own struct that derives
@@ -145,6 +199,7 @@ Rehearse bad networks with **Practice offline → net: awful**, or in Rust with
 3. Rewrite `apps/web/src/game/*` to match (TypeScript errors will list what's needed).
 4. `pnpm contract`, `pnpm verify`.
 
-Need a real physics engine? Anything you add to the sim must be deterministic across native and
-wasm (e.g. `rapier3d` with the `enhanced-determinism` feature). The determinism probe in
-`pnpm verify` will tell you.
+Need tumbling rigid bodies (rotating boxes, ragdolls)? `gs-physics` keeps boxes axis-aligned.
+Anything you add to the sim must be deterministic across native and wasm (e.g. `rapier3d` /
+`rapier2d` with the `enhanced-determinism` feature, stored in your state). Add it to the
+probes and `pnpm verify` will tell you.

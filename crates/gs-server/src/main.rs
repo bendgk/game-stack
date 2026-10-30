@@ -36,7 +36,12 @@ async fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         Some("probe") => {
-            println!("{:016x}", gs_core::env::probe::<G>(1, "versus", 4, 1200));
+            println!(
+                "game:{:016x} physics2d:{:016x} physics3d:{:016x}",
+                gs_core::env::probe::<G>(1, "versus", 4, 1200),
+                gs_physics::probe::<gs_physics::d2::Vec2>(600),
+                gs_physics::probe::<gs_physics::d3::Vec3>(600)
+            );
             return Ok(());
         }
         Some(other) if other != "serve" => anyhow::bail!("unknown command {other:?} (serve | contract | probe)"),

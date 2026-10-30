@@ -5,7 +5,7 @@
 //! zero-copy `Float32Array` (see `RenderEntity::STRIDE`). React decides *how* a kind looks;
 //! Rust decides *where* it is. The renderer never reads game state directly.
 
-use crate::math::{Quat, Vec3};
+use crate::math::{Quat, Vec2, Vec3};
 
 /// Entity is the local player (cameras follow it).
 pub const FLAG_ME: u16 = 1 << 0;
@@ -50,6 +50,22 @@ impl RenderEntity {
             a: 0.0,
             b: 0.0,
         }
+    }
+    /// 2D games: place at `(x, y)` on the XY plane. `z` is draw order (bigger = in front);
+    /// pair with `<GameCanvas orthographic>` + `<Camera2D>` on the client.
+    pub fn new2d(id: u32, kind: impl Into<u16>, pos: Vec2, z: f32) -> Self {
+        Self::new(id, kind, Vec3::new(pos.x, pos.y, z))
+    }
+    /// 2D rotation (radians, counter-clockwise) about the Z axis.
+    pub fn angle(mut self, radians: f32) -> Self {
+        let (s, c) = crate::math::sin_cos(radians * 0.5);
+        self.rot = Quat::from_xyzw(0.0, 0.0, s, c);
+        self
+    }
+    /// 2D size in world units (z scale stays 1).
+    pub fn size2d(mut self, size: Vec2) -> Self {
+        self.scale = Vec3::new(size.x, size.y, 1.0);
+        self
     }
     pub fn rot(mut self, q: Quat) -> Self {
         self.rot = q;

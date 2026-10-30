@@ -3,29 +3,36 @@
 // total over `Kind`, so adding a kind in Rust is a type error here until you draw it.
 
 import type { Kind } from '@gs/engine';
-import { THREE, useColor, useEntityFrame, type EntityComponent, type EntityProps } from '@gs/engine/three';
-import { useRef } from 'react';
+import { Sprite, THREE, useColor, useEntityFrame, type EntityComponent, type EntityProps } from '@gs/engine/three';
+import { Suspense, useRef, useState } from 'react';
 
-const EMOTE_COLORS = [0, 0xffd166, 0xef476f, 0x06d6a0, 0x118ab2];
+/** Emote bubbles: drawn with the gs2d MCP (assets/2d/emotes.gs2d.json → public/sprites/emotes.*). */
+function EmoteBubble({ entity }: EntityProps) {
+  const [id, setId] = useState(0);
+  const group = useRef<THREE.Group>(null);
+  useEntityFrame(entity, (e) => {
+    const next = Math.round(e.b); // b = emote id (0 = none), set in Rust `render`
+    if (next !== id) setId(next);
+    if (group.current) group.current.position.y = 1.15 + Math.sin(performance.now() / 150) * 0.06;
+  });
+  if (!id) return null;
+  return (
+    <group ref={group}>
+      <Suspense fallback={null}>
+        <Sprite sheet="/sprites/emotes.json" frame={`emote/${(id - 1) % 4}`} billboard />
+      </Suspense>
+    </group>
+  );
+}
 
 function Player({ entity }: EntityProps) {
   const color = useColor(entity.color);
   const ring = useRef<THREE.Mesh>(null);
-  const bubble = useRef<THREE.Mesh>(null);
-  const bubbleMat = useRef<THREE.MeshStandardMaterial>(null);
   useEntityFrame(entity, (e) => {
-    // a = dash charge (0..1), b = emote id
+    // a = dash charge (0..1)
     if (ring.current) {
       ring.current.scale.setScalar(0.6 + 0.4 * e.a);
       (ring.current.material as THREE.MeshBasicMaterial).opacity = e.a >= 1 ? 0.85 : 0.25;
-    }
-    if (bubble.current && bubbleMat.current) {
-      const id = Math.round(e.b);
-      bubble.current.visible = id > 0;
-      if (id > 0) {
-        bubbleMat.current.color.setHex(EMOTE_COLORS[id % EMOTE_COLORS.length]!);
-        bubble.current.position.y = 1.3 + Math.sin(performance.now() / 150) * 0.08;
-      }
     }
   });
   return (
@@ -47,10 +54,7 @@ function Player({ entity }: EntityProps) {
         <ringGeometry args={[0.55, 0.7, 32]} />
         <meshBasicMaterial color={color} transparent opacity={0.5} />
       </mesh>
-      <mesh ref={bubble} visible={false}>
-        <icosahedronGeometry args={[0.18, 1]} />
-        <meshStandardMaterial ref={bubbleMat} emissiveIntensity={0.6} />
-      </mesh>
+      <EmoteBubble entity={entity} />
     </>
   );
 }

@@ -12,6 +12,8 @@ ts = ["dep:tsify", "dep:wasm-bindgen"]
 
 [dependencies]
 gs-core.workspace = true
+# Optional engine piece: this game uses the 3D mode (gs_physics::d3).
+gs-physics.workspace = true
 gs-wire.workspace = true
 serde.workspace = true
 tsify = { workspace = true, optional = true }
