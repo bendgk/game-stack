@@ -52,8 +52,17 @@ fn trace_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             n = normalize(vec3<f32>(wx * 0.012, 1.0, wz * 0.012));
         }
     }
+    // Distant hits (a pixel spans more than ~2 voxels): blend toward the smooth
+    // coverage-gradient normal.
+    let footprint = h.t * lod_k;
+    if (footprint > 2.0 && h.tint == NO_TINT) {
+        // One level coarser than the pixel footprint: smooth over terrain steps, not along them.
+        let level = u32(clamp(floor(log2(footprint) * 0.5) + 1.0, 1.0, 6.0));
+        let sn = smooth_normal(pos - h.n * 0.5, level, n);
+        n = normalize(mix(n, sn, clamp((footprint - 2.0) / 6.0, 0.0, 1.0)));
+    }
     textureStore(o_pos, c, vec4<f32>(pos, h.t));
     textureStore(o_nrm, c, vec4<f32>(n, emis));
-    textureStore(o_alb, c, vec4<f32>(hit_albedo(h.mat, h.avg, h.voxel, h.tint), rough));
+    textureStore(o_alb, c, vec4<f32>(hit_albedo_at(h.mat, h.avg, h.voxel, h.tint, h.t), rough));
     textureStore(o_mat, c, vec4<u32>(h.mat, 0u, 0u, 0u));
 }

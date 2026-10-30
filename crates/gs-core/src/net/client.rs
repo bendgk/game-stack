@@ -357,7 +357,12 @@ impl<G: Game> Predictor<G> {
         } else {
             (-err).round() as i64
         };
-        let target = (self.tick as i64 + shift).max(self.auth_tick as i64 + 1) as u32;
+        // Never lead by more than `max_prediction`: a slack measured during a stall (a frozen or
+        // background tab) can be wildly stale, and acting on it all at once would put us
+        // thousands of ticks ahead, stalled, and re-simulating all of them on every snapshot.
+        let target = (self.tick as i64 + shift)
+            .clamp(self.auth_tick as i64 + 1, (self.auth_tick + self.cfg.max_prediction.saturating_sub(1)) as i64)
+            as u32;
         self.stats.resyncs += 1;
         self.slack_ema = self.cfg.target_slack;
         // Let the effect travel to the server and back before judging again.
@@ -392,7 +397,16 @@ impl<G: Game> Predictor<G> {
             self.seen_events.pop_first();
         }
 
-        if at >= self.tick {
+        let runaway = self.tick > at + self.cfg.max_prediction;
+        if runaway {
+            // Far ahead of a fresh snapshot (see `steer`): drop the stale lead and slack, adopt
+            // the server state, and let `steer` re-lead from there.
+            self.stats.resyncs += 1;
+            self.slack_ema = self.cfg.target_slack;
+            self.inputs.clear();
+            self.resync_cooldown = 0;
+        }
+        if at >= self.tick || runaway {
             // Server is ahead of our prediction: adopt it and re-lead from there.
             self.game = self.auth.game.clone();
             self.roster_used = self.auth.roster.clone();

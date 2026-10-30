@@ -354,14 +354,63 @@ fn trace(ro: vec3<f32>, rd: vec3<f32>, tmax_in: f32, lod_k: f32, lod_rnd: f32, m
     return h;
 }
 
+/// How full (0..1) the node of `level` containing voxel `p` is (level 0 = the voxel itself).
+fn coverage(p: vec3<f32>, level: u32) -> f32 {
+    let ip = vec3<i32>(floor(p));
+    if (any(ip < vec3<i32>(0)) || any(ip >= vec3<i32>(i32(u.world.z)))) { return 0.0; }
+    var node = u.world.x;
+    var l = u.world.y;
+    loop {
+        let s = 2u * (l - 1u);
+        let c3 = (ip >> vec3<u32>(s)) & vec3<i32>(3);
+        let ci = u32(c3.x | (c3.y << 2u) | (c3.z << 4u));
+        if (!mask_bit(node, ci)) { return 0.0; }
+        if (l == 1u) { return 1.0; }
+        let child = child_ptr(node, ci);
+        if (l - 1u <= level) {
+            return f32(nodes[child + 2u] >> 24u) / 255.0;
+        }
+        node = child;
+        l -= 1u;
+    }
+    return 0.0;
+}
+
+/// A smooth surface normal from the coverage gradient around `p` at `level` (like the gradient
+/// of a distance field). Far away, a hit's own normal is the face of a coarse cube, so slopes
+/// shade as stair-stepped stripes; the gradient sees the actual slope.
+fn smooth_normal(p: vec3<f32>, level: u32, fallback: vec3<f32>) -> vec3<f32> {
+    let s = f32(1u << (2u * level));
+    let g = vec3<f32>(
+        coverage(p + vec3<f32>(s, 0.0, 0.0), level) - coverage(p - vec3<f32>(s, 0.0, 0.0), level),
+        coverage(p + vec3<f32>(0.0, s, 0.0), level) - coverage(p - vec3<f32>(0.0, s, 0.0), level),
+        coverage(p + vec3<f32>(0.0, 0.0, s), level) - coverage(p - vec3<f32>(0.0, 0.0, s), level),
+    );
+    if (dot(g, g) < 1e-4) { return fallback; }
+    let n = -normalize(g);
+    // Keep it facing the side we hit.
+    return select(fallback, n, dot(n, fallback) > 0.0);
+}
+
 /// Albedo (linear) of a hit, with per-voxel grain; TINT materials take the instance colour.
+/// Grain fades out once a voxel is smaller than ~1.5 pixels (`t` = hit distance in voxels):
+/// sub-pixel colour noise can't be resolved, it only aliases into shimmering grain.
+fn hit_albedo_at(mat: u32, avg: u32, voxel: vec3<i32>, tint: u32, t: f32) -> vec3<f32> {
+    let footprint = t * u.params.x; // voxels per pixel at this distance
+    return hit_albedo_grain(mat, avg, voxel, tint, clamp(1.5 - footprint, 0.0, 1.0));
+}
+
 fn hit_albedo(mat: u32, avg: u32, voxel: vec3<i32>, tint: u32) -> vec3<f32> {
+    return hit_albedo_grain(mat, avg, voxel, tint, 0.0);
+}
+
+fn hit_albedo_grain(mat: u32, avg: u32, voxel: vec3<i32>, tint: u32, grain: f32) -> vec3<f32> {
     if (mat == MAT_LOD) {
         let c = vec3<f32>(f32(avg & 255u), f32((avg >> 8u) & 255u), f32((avg >> 16u) & 255u)) / 255.0;
         return pow(c, vec3<f32>(2.2));
     }
     let m = mats[mat];
-    let g = (f32(hash3(voxel) & 255u) / 255.0 - 0.5) * 2.0 * m.albedo.w;
+    let g = (f32(hash3(voxel) & 255u) / 255.0 - 0.5) * 2.0 * m.albedo.w * grain;
     var base = m.albedo.rgb;
     if ((m.flags & F_TINT) != 0u && tint != NO_TINT) {
         let t = vec3<f32>(f32((tint >> 16u) & 255u), f32((tint >> 8u) & 255u), f32(tint & 255u)) / 255.0;

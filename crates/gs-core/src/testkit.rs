@@ -15,6 +15,8 @@ use crate::net::server::Authority;
 
 #[derive(Clone, Debug)]
 pub struct SoakReport {
+    /// Each client's prediction lead over the server at the end (ticks).
+    pub final_lead: Vec<i64>,
     pub welcomed: usize,
     pub server_ticks: u32,
     pub snapshots: u32,
@@ -35,6 +37,19 @@ impl SoakReport {
 
 /// Run `clients` predictors against one room for `seconds` of simulated time.
 pub fn soak<G: Game>(setup: Setup, clients: usize, bots: u8, link: LinkConfig, seconds: f64) -> SoakReport {
+    soak_with_freeze::<G>(setup, clients, bots, link, seconds, None)
+}
+
+/// Like [`soak`], but client 0 is throttled for `(at_ms, for_ms)`: one frame per second, the
+/// way a browser runs a background tab (or a tab busy loading a big world).
+pub fn soak_with_freeze<G: Game>(
+    setup: Setup,
+    clients: usize,
+    bots: u8,
+    link: LinkConfig,
+    seconds: f64,
+    freeze: Option<(f64, f64)>,
+) -> SoakReport {
     let dt = 1000.0 / f64::from(G::TICK_HZ);
     let mut host = RoomHost::<G>::new("soak", setup);
     host.add_bots(bots);
@@ -75,6 +90,17 @@ pub fn soak<G: Game>(setup: Setup, clients: usize, bots: u8, link: LinkConfig, s
         }
         // Clients: ~60 fps display loop with phase offsets.
         for c in 0..clients {
+            if c == 0 && freeze.is_some_and(|(at, len)| now >= at && now < at + len) {
+                // Throttled like a background tab: one frame per second.
+                if now < next_frame[c] {
+                    continue;
+                }
+                next_frame[c] = now + 1000.0;
+            } else if now < next_frame[c] {
+                continue;
+            } else {
+                next_frame[c] += 16.67;
+            }
             for (_, bytes) in downs[c].recv(now) {
                 match &mut preds[c] {
                     None => {
@@ -87,8 +113,7 @@ pub fn soak<G: Game>(setup: Setup, clients: usize, bots: u8, link: LinkConfig, s
                     }
                 }
             }
-            if now >= next_frame[c] {
-                next_frame[c] += 16.67;
+            {
                 if let Some(p) = &mut preds[c] {
                     let input = p.game().bot_input(p.me());
                     p.set_input(input);
@@ -136,6 +161,7 @@ pub fn soak<G: Game>(setup: Setup, clients: usize, bots: u8, link: LinkConfig, s
         inputs_received: 0,
         final_slack: Vec::new(),
         resyncs: 0,
+        final_lead: Vec::new(),
     };
     for p in preds.iter().flatten() {
         let s = p.stats();
@@ -143,6 +169,7 @@ pub fn soak<G: Game>(setup: Setup, clients: usize, bots: u8, link: LinkConfig, s
         r.rollbacks += s.rollbacks;
         r.prediction_hits += s.prediction_hits;
         r.final_slack.push(s.slack);
+        r.final_lead.push(p.tick() as i64 - host.auth.tick() as i64);
         r.resyncs += s.resyncs;
     }
     for (_, seat) in host.auth.seats() {

@@ -143,3 +143,18 @@ fn kinds_are_consistent() {
         assert_eq!(format!("{k:?}"), KIND_NAMES[i], "KIND_NAMES[{i}] must be the variant name");
     }
 }
+
+#[test]
+fn netcode_recovers_from_a_throttled_tab() {
+    // 20 s as a background tab (one frame per second), then back: the client must return to a
+    // small prediction lead instead of running far ahead and re-simulating on every snapshot.
+    let r = gs_core::testkit::soak_with_freeze::<OrbArena>(
+        Setup { seed: 6, mode: "versus".into() },
+        1,
+        1,
+        LinkConfig::lan(),
+        30.0,
+        Some((3000.0, 20000.0)),
+    );
+    assert!(r.final_lead.iter().all(|l| (0..=10).contains(l)), "lead after the stall: {:?}", r.final_lead);
+}

@@ -39,28 +39,6 @@ fn fog(col: vec3<f32>, rd: vec3<f32>, dist_vox: f32, origin_y: f32) -> vec3<f32>
     return mix(col, inscatter, f);
 }
 
-/// How full (0..1) the node of `level` containing voxel `p` is (level 0 = the voxel itself).
-fn coverage(p: vec3<f32>, level: u32) -> f32 {
-    let ip = vec3<i32>(floor(p));
-    if (any(ip < vec3<i32>(0)) || any(ip >= vec3<i32>(i32(u.world.z)))) { return 0.0; }
-    var node = u.world.x;
-    var l = u.world.y;
-    loop {
-        let s = 2u * (l - 1u);
-        let c3 = (ip >> vec3<u32>(s)) & vec3<i32>(3);
-        let ci = u32(c3.x | (c3.y << 2u) | (c3.z << 4u));
-        if (!mask_bit(node, ci)) { return 0.0; }
-        if (l == 1u) { return 1.0; }
-        let child = child_ptr(node, ci);
-        if (l - 1u <= level) {
-            return f32(nodes[child + 2u] >> 24u) / 255.0;
-        }
-        node = child;
-        l -= 1u;
-    }
-    return 0.0;
-}
-
 /// Ambient occlusion by cone tracing the coverage pyramid: 4 cones around the normal, 5 steps
 /// each, every step reading one node whose size matches the cone's width there.
 fn cone_ao(p: vec3<f32>, n: vec3<f32>) -> f32 {
@@ -120,8 +98,10 @@ fn shade_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let sd = normalize(u.sun_dir.xyz);
     let lod_k = u.params.x;
-    // Offset grows with distance: float precision shrinks far away.
-    let off = n * (0.05 + gp.w * 0.0005);
+    // Start secondary rays off the surface by about one pixel's footprint: a distant pixel
+    // covers many voxels, and stepping off by less makes sub-pixel stairs shadow themselves
+    // (stripes on slopes under a low sun).
+    let off = n * (0.05 + gp.w * lod_k * 1.5);
 
     // Direct sun.
     let ndl = max(dot(n, sd), 0.0);

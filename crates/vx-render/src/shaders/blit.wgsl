@@ -70,6 +70,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var c = textureSampleLevel(src, samp, in.uv, 0.0).rgb;
     if (pp.mode > 0.5 && pp.mode < 1.5) { return vec4<f32>(in.uv, 0.5, 1.0); }
     if (pp.mode > 1.5) { return vec4<f32>(c, 1.0); }
+    // Contrast-adaptive sharpening: restores the crispness TAA and upscaling take away, less
+    // where local contrast is already high (no halos on hard edges).
+    let px = 1.0 / vec2<f32>(textureDimensions(src));
+    let n = textureSampleLevel(src, samp, in.uv + vec2<f32>(0.0, -px.y), 0.0).rgb;
+    let s = textureSampleLevel(src, samp, in.uv + vec2<f32>(0.0, px.y), 0.0).rgb;
+    let e = textureSampleLevel(src, samp, in.uv + vec2<f32>(px.x, 0.0), 0.0).rgb;
+    let w = textureSampleLevel(src, samp, in.uv + vec2<f32>(-px.x, 0.0), 0.0).rgb;
+    let mn = min(c, min(min(n, s), min(e, w)));
+    let mx = max(c, max(max(n, s), max(e, w)));
+    let amp = sqrt(clamp(min(mn, 1.0 - min(mx, vec3<f32>(1.0))) / max(mx, vec3<f32>(1e-4)), vec3<f32>(0.0), vec3<f32>(1.0)));
+    let wgt = -amp * 0.2; // sharpness
+    c = max((c + (n + s + e + w) * wgt) / (1.0 + 4.0 * wgt), vec3<f32>(0.0));
     // Cheap bloom: wide taps from the mip-less source (bright pixels only).
     let d = vec2<f32>(textureDimensions(src));
     var b = vec3<f32>(0.0);
