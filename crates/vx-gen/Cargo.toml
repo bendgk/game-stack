@@ -1,0 +1,21 @@
+[package]
+name = "vx-gen"
+description = "voxelscape procedural generation: WFC, cities, buildings, props — deterministic from a SceneSpec"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+vx-core = { path = "../vx-core", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wgpu = { version = "30", optional = true }
+pollster = { version = "1", optional = true }
+bytemuck = { version = "1.25", optional = true }
+
+[features]
+default = ["parallel", "gpu"]
+# GPU wave function collapse (wgpu compute).
+gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
+parallel = ["vx-core/parallel"]

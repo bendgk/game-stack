@@ -1,0 +1,18 @@
+[package]
+name = "vx-render"
+description = "voxelscape GPU renderer: WGSL ray tracing of the voxel DAG (wgpu: Metal natively, WebGPU in the browser)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+vx-core = { path = "../vx-core", default-features = false }
+wgpu = "30"
+bytemuck = { version = "1.25", features = ["derive"] }
+glam = { version = "0.34.1", features = ["bytemuck"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "1"
+png = "0.18"
+vx-core = { path = "../vx-core" }

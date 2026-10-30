@@ -136,6 +136,23 @@ player size, camera and background. Both render previews the agent looks at, and
 apps/web/public/sprites/coin.json."* The emote bubbles in the example game were made this way
 (`assets/2d/emotes.gs2d.json`).
 
+### Voxel worlds and procedural generation (optional)
+
+`crates/vx-*` is a voxel engine plus a library of generators you can use in any game:
+- trillion-voxel worlds stored as a compressed DAG, ray traced on the GPU;
+- noise, heightmaps, and GPU hydraulic erosion;
+- smooth or Minecraft-style terrain;
+- GPU wave function collapse;
+- procedural cities, buildings and 41 props.
+
+```sh
+pnpm vx shot    --prompt "medieval town at sunset" --out town.png
+pnpm vx terrain --relief mountains --erode gpu --sea 0.08 --out mountains.png
+pnpm vx wfc     --size 1024 --out roads.png
+```
+
+Guide and API tour: [`docs/VOXELS.md`](docs/VOXELS.md).
+
 ### Three rules that keep multiplayer working
 
 1. **The sim must be deterministic.** Use `gs_core::math` (not `f32::sin`), `gs_core::Rng`
@@ -188,6 +205,11 @@ crates/
   gs-server/        the server binary: WebRTC, room actors, Dragonfly, Postgres, HTTP
                     + bin/netbot.rs (headless WebRTC players)
   gs-client/        wasm bindings for the browser (also an in-browser LocalServer)
+  vx-core/          OPTIONAL voxel engine: sparse 64-tree DAG, composition, raycasts
+  vx-render/        GPU voxel ray tracer (WGSL, wgpu: native + WebGPU)
+  vx-terrain/       noise, heightmaps, GPU hydraulic erosion, terrain shapes
+  vx-gen/           wave function collapse (CPU + GPU), cities, buildings, props
+  vx-cli/           `pnpm vx …`: generate, benchmark, screenshot
 packages/engine/    @gs/engine: transport, session, input, React hooks, R3F primitives
 apps/web/           ★ YOUR CLIENT: lobby, scene, renderers, HUD, input mapping, sfx
   public/sprites/   sprite sheets exported by gs2d   (public/models/ for gs3d GLBs)
@@ -198,7 +220,7 @@ tools/mcp-3d/       gs3d MCP server: 3D asset studio (headless Blender)
 migrations/         Postgres schema
 contract/           generated wire contract (checked in)
 scripts/            dev, build-wasm, verify, contract, stack, e2e, setup
-docs/               ARCHITECTURE.md, RECIPES.md
+docs/               ARCHITECTURE.md, RECIPES.md, VOXELS.md
 ```
 
 ## Troubleshooting

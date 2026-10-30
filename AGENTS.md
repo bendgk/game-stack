@@ -35,6 +35,7 @@ matches. Never hand-write a TS type that mirrors a Rust one.
 | Persistent records (accounts, stats) | `migrations/NNNN_*.sql` (new file, never edit an applied one) + `crates/gs-server/src/db.rs` | Postgres via sqlx |
 | Fast durable KV / ordered channels | `crates/gs-server/src/store.rs` (`kv_*`, `channel_*`) | Dragonfly |
 | Server HTTP endpoints | `crates/gs-server/src/http.rs` | REST only; never game traffic |
+| Voxel worlds, terrain, erosion, WFC, cities, props (optional) | `crates/vx-core`, `vx-terrain`, `vx-gen`, `vx-render` | `docs/VOXELS.md`; try `pnpm vx`; generators are deterministic per seed |
 | Engine changes (netcode, physics, codec) | `crates/gs-core`, `crates/gs-wire`, `packages/engine` | rare; add tests in the same crate |
 
 Step-by-step recipes for each row: `docs/RECIPES.md`. Architecture and the "why": `docs/ARCHITECTURE.md`.

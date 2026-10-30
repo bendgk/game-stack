@@ -1,0 +1,18 @@
+[package]
+name = "vx-cli"
+description = "voxelscape command line: generate worlds, render screenshots, benchmark"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "vx"
+path = "src/main.rs"
+
+[dependencies]
+vx-core = { path = "../vx-core" }
+vx-gen = { path = "../vx-gen" }
+vx-render = { path = "../vx-render" }
+vx-terrain = { path = "../vx-terrain" }
+serde_json = { workspace = true }

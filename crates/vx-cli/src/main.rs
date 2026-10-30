@@ -1,0 +1,306 @@
+//! `vx` — voxelscape on the command line.
+//!
+//!   vx gen   --prompt "neon city at night"  [--spec spec.json] [--out world.vxd]
+//!   vx shot  --prompt "..." --out shot.png  [--w 1920 --h 1080] [--cam x,y,z,yaw,pitch] [--frames 64]
+//!   vx wfc   --size 1024 [--out roads.png] [--cpu]     (GPU wave function collapse benchmark)
+//!   vx terrain --relief mountains --erode gpu --out land.png  [--size 512] [--iters 400]
+//!              [--voxel 4] [--blocky 16] [--sea 0.3] [--seed 7]   (reliefs: hills mountains island canyons mesas plains)
+//!
+//! Without --spec, the prompt is turned into a scene by the built-in (model-free) parser.
+
+// Index loops mirror the WGSL kernels and grid maths; keeping them literal reads better here.
+#![allow(clippy::needless_range_loop, clippy::type_complexity, clippy::too_many_arguments)]
+
+use std::collections::HashMap;
+
+use vx_core::{Dag, Palette, Vec3};
+use vx_gen::{Options, SceneSpec, generate_with, spec_from_prompt};
+use vx_render::{Camera, Env, headless::Headless};
+
+fn args() -> (String, HashMap<String, String>) {
+    let mut it = std::env::args().skip(1);
+    let cmd = it.next().unwrap_or_else(|| "help".into());
+    let mut m = HashMap::new();
+    let rest: Vec<String> = it.collect();
+    let mut i = 0;
+    while i < rest.len() {
+        if let Some(k) = rest[i].strip_prefix("--") {
+            // A bare flag (`--cpu`) is followed by another `--key` or nothing.
+            match rest.get(i + 1).filter(|v| !v.starts_with("--")) {
+                Some(v) => {
+                    m.insert(k.to_string(), v.clone());
+                    i += 2;
+                }
+                None => {
+                    m.insert(k.to_string(), String::new());
+                    i += 1;
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    (cmd, m)
+}
+
+fn spec_of(a: &HashMap<String, String>) -> SceneSpec {
+    if let Some(path) = a.get("spec") {
+        let s = std::fs::read_to_string(path).expect("read spec");
+        SceneSpec::from_json(&s).expect("parse spec")
+    } else {
+        spec_from_prompt(a.get("prompt").map(String::as_str).unwrap_or("a modern city on a sunny afternoon"))
+    }
+}
+
+pub fn env_for(spec: &SceneSpec) -> Env {
+    let (elev, az) = spec.sun();
+    let mut env = Env { sun_elevation: elev, sun_azimuth: az, fog: 0.0004 + spec.fog * 0.004, ..Default::default() };
+    if elev < 0.05 {
+        env.exposure = 0.18 + (0.05 - elev).min(0.35) * 6.0;
+        env.bloom = 0.6;
+    }
+    env
+}
+
+fn cam_arg(a: &HashMap<String, String>) -> Option<Camera> {
+    let v: Vec<f32> = a.get("cam")?.split(',').filter_map(|x| x.parse().ok()).collect();
+    Some(Camera { pos: Vec3::new(v[0], v[1], v[2]), yaw: v[3], pitch: v[4], fov_y: 1.0 })
+}
+
+/// Render `dag` headless and save a PNG (`--out`, `--w`, `--h`, `--frames`, `--cam`).
+fn shot(a: &HashMap<String, String>, dag: &Dag, palette: &Palette, default_cam: Camera, env: &Env) {
+    let (wd, ht) = (
+        a.get("w").and_then(|v| v.parse().ok()).unwrap_or(1600),
+        a.get("h").and_then(|v| v.parse().ok()).unwrap_or(900),
+    );
+    let mut hl = Headless::new(wd, ht).expect("gpu");
+    hl.r.set_world(dag, palette).expect("upload");
+    let cam = cam_arg(a).unwrap_or(default_cam);
+    let frames = a.get("frames").and_then(|v| v.parse().ok()).unwrap_or(48);
+    let ms = hl.render(&cam, env, frames, 0.0);
+    let out = a.get("out").cloned().unwrap_or("shot.png".into());
+    hl.save_png(&out).unwrap();
+    println!("rendered {out} on {}: {ms:.2} ms/frame at {wd}x{ht}", hl.adapter_info);
+}
+
+fn terrain(a: &HashMap<String, String>) {
+    use vx_terrain::{Blocky, Heightmap, Landscape, Relief, TerrainMats, erosion};
+    let get = |k: &str, d: f32| a.get(k).and_then(|v| v.parse().ok()).unwrap_or(d);
+    let relief = match a.get("relief").map(String::as_str).unwrap_or("mountains") {
+        "hills" => Relief::Hills,
+        "island" => Relief::Island,
+        "canyons" => Relief::Canyons,
+        "mesas" => Relief::Mesas,
+        "plains" => Relief::Plains,
+        _ => Relief::Mountains,
+    };
+    let n = get("size", 512.0) as usize;
+    let seed = get("seed", 7.0) as u32;
+    let cell = 64; // one height sample per 2 m
+    let amp = get("relief_m", n as f32 * 2.0 * Heightmap::suggested_relief(relief)) * 32.0;
+    let t0 = std::time::Instant::now();
+    let mut hm = Heightmap::generate(n, n, cell, relief, seed, 64.0, amp);
+    let gen_ms = t0.elapsed().as_millis();
+    let p = erosion::Params { iterations: get("iters", 1500.0) as u32, seed, ..Default::default() };
+    let t1 = std::time::Instant::now();
+    let before = hm.data.clone();
+    let eroded = match a.get("erode").map(String::as_str).unwrap_or("gpu") {
+        "none" => false,
+        "cpu" => {
+            erosion::erode(&mut hm, &p);
+            true
+        }
+        _ => {
+            match vx_terrain::erosion_gpu::device() {
+                Ok((dev, q)) => drop(vx_terrain::erosion_gpu::erode_gpu(&dev, &q, &mut hm, &p)),
+                Err(e) => {
+                    eprintln!("{e}: eroding on the CPU");
+                    erosion::erode(&mut hm, &p);
+                }
+            }
+            true
+        }
+    };
+    // Net deposition (voxels) for the material rules.
+    let deposited = eroded.then(|| hm.data.iter().zip(&before).map(|(a, b)| a - b).collect::<Vec<f32>>());
+    let erode_ms = t1.elapsed().as_millis();
+    let (lo, hi) = hm.data.iter().fold((f32::MAX, f32::MIN), |(x, y), &v| (x.min(v), y.max(v)));
+    // Sea level on the 2 m grid, so the water plane is whole DAG cubes (never sampled).
+    let sea = ((lo + (hi - lo) * get("sea", 0.0)) / 64.0).round() * 64.0;
+    let mut palette = Palette::default_city();
+    let mats = TerrainMats::add(&mut palette);
+    let side = (n as i32 * cell) as u64;
+    let mut levels = 6;
+    while 4u64.pow(levels) < side.max(hi as u64 + 64) {
+        levels += 1;
+    }
+    // Sea (or plain ground) out to the edge of the world so the horizon isn't a void. Whole
+    // solid cubes: costs a few nodes.
+    let world = 4i32.pow(levels);
+    let around = vx_core::BoxShape {
+        b: vx_core::Aabb::new(
+            vx_core::IVec3::new(0, 0, 0),
+            vx_core::IVec3::new(world, if sea > lo { sea as i32 } else { (lo as i32 / 64) * 64 }, world),
+        ),
+        mat: if sea > lo { mats.water } else { mats.dirt },
+    };
+    let floor = vx_core::BoxShape {
+        b: vx_core::Aabb::new(vx_core::IVec3::ZERO, vx_core::IVec3::new(world, 32, world)),
+        mat: mats.rock,
+    };
+    let t2 = std::time::Instant::now();
+    let (dag, stats) = match a.get("blocky").and_then(|v| v.parse::<i32>().ok()) {
+        Some(block) => {
+            let mut b = Blocky::new(&hm, block, mats, seed);
+            if sea > lo {
+                b = b.with_sea((sea / block as f32) as i32);
+            }
+            vx_core::build(&palette, levels, &[&floor, &around, &b])
+        }
+        None => {
+            let mut land = Landscape::new(hm, mats, seed).with_voxel(get("voxel", 4.0) as i32);
+            if sea > lo {
+                land = land.with_sea(sea as i32);
+            }
+            if let Some(d) = deposited {
+                land = land.with_deposits(d);
+            }
+            vx_core::build(&palette, levels, &[&floor, &around, &land])
+        }
+    };
+    println!(
+        "terrain {n}² ({} m): {:.3e} voxels in {} MB · heightmap {gen_ms} ms · erosion {erode_ms} ms ({} steps) · build {} ms · sampled leaves {}",
+        n * 2,
+        dag.voxel_count() as f64,
+        (dag.words.len() * 4) >> 20,
+        p.iterations,
+        t2.elapsed().as_millis(),
+        stats.sampled_leaves
+    );
+    if a.contains_key("out") {
+        let s = side as f32;
+        let cam = Camera { pos: Vec3::new(-0.15 * s, hi + s * 0.35, 1.15 * s), yaw: 0.75, pitch: -0.32, fov_y: 1.0 };
+        let env = Env { sun_elevation: get("sun", 0.6), sun_azimuth: 2.2, fog: 0.0003, ..Default::default() };
+        shot(a, &dag, &palette, cam, &env);
+    }
+}
+
+/// Solve an N×N road network with the GPU WFC (and the CPU one for comparison on small N).
+fn wfc_bench(a: &HashMap<String, String>) {
+    use vx_gen::wfc::{Tile, Wfc};
+    let n: usize = a.get("size").and_then(|v| v.parse().ok()).unwrap_or(1024);
+    let r = |name, edges, weight| Tile { name, edges, weight };
+    let tiles = vec![
+        r("lot", [0, 0, 0, 0], 3.0),
+        r("ns", [1, 0, 1, 0], 1.0),
+        r("ew", [0, 1, 0, 1], 1.0),
+        r("cross", [1, 1, 1, 1], 0.35),
+        r("t_n", [0, 1, 1, 1], 0.25),
+        r("t_e", [1, 0, 1, 1], 0.25),
+        r("t_s", [1, 1, 0, 1], 0.25),
+        r("t_w", [1, 1, 1, 0], 0.25),
+        r("ne", [1, 1, 0, 0], 0.15),
+        r("es", [0, 1, 1, 0], 0.15),
+        r("sw", [0, 0, 1, 1], 0.15),
+        r("wn", [1, 0, 0, 1], 0.15),
+    ];
+    let wfc = Wfc::new(n, n, tiles.clone());
+    let (dev, q) = vx_gen::wfc_gpu::device().expect("gpu");
+    let _ = wfc.solve_gpu(&dev, &q, 0, &|_, _, _| 1.0); // warm up (shader compile)
+    let (sol, st) = wfc.solve_gpu(&dev, &q, 1, &|_, _, _| 1.0);
+    let sol = sol.expect("GPU WFC converged");
+    println!(
+        "GPU WFC {n}×{n} = {} cells: {} rounds, {:.1} ms ({:.1} M cells/s), valid {}",
+        n * n,
+        st.rounds,
+        st.millis,
+        (n * n) as f64 / st.millis / 1e3,
+        wfc.check(&sol)
+    );
+    if a.contains_key("cpu") {
+        let t = std::time::Instant::now();
+        let c = wfc.solve(1, 40, &|_, _, _| 1.0);
+        println!("CPU WFC {n}×{n}: {:.1} ms, solved {}", t.elapsed().as_secs_f64() * 1000.0, c.is_some());
+    }
+    if let Some(out) = a.get("out") {
+        // 3×3 pixels per cell: centre + the four road arms.
+        let s = n * 3;
+        let mut img = vec![0u8; s * s * 3];
+        for (i, &t) in sol.iter().enumerate() {
+            let (cx, cz) = ((i % n) * 3 + 1, (i / n) * 3 + 1);
+            let e = tiles[t].edges;
+            let mut put =
+                |x: usize, z: usize, c: [u8; 3]| img[(z * s + x) * 3..(z * s + x) * 3 + 3].copy_from_slice(&c);
+            let lot = [70, 110, 60];
+            for dz in 0..3 {
+                for dx in 0..3 {
+                    put(cx + dx - 1, cz + dz - 1, lot);
+                }
+            }
+            if e != [0; 4] {
+                let road = [40, 40, 44];
+                put(cx, cz, road);
+                if e[0] == 1 {
+                    put(cx, cz - 1, road)
+                }
+                if e[1] == 1 {
+                    put(cx + 1, cz, road)
+                }
+                if e[2] == 1 {
+                    put(cx, cz + 1, road)
+                }
+                if e[3] == 1 {
+                    put(cx - 1, cz, road)
+                }
+            }
+        }
+        vx_render::headless::save_rgb_png(out, s as u32, s as u32, &img).unwrap();
+        println!("wrote {out}");
+    }
+}
+
+fn main() {
+    let (cmd, a) = args();
+    match cmd.as_str() {
+        "gen" | "shot" => {
+            let spec = spec_of(&a);
+            eprintln!("spec: {}", serde_json::to_string(&spec).unwrap());
+            let w = generate_with(&spec, Options { gpu_wfc: a.contains_key("gpu-wfc") });
+            let s = &w.stats;
+            println!(
+                "{}: {:.3e} voxels ({:.1} billion) in {} MB · plan {} ms · emit {} ms · build {} ms · sampled leaves {} · linked {} · {} buildings, {} props, {} roads · unique modules {} tiles {} props {}",
+                spec.title,
+                s.voxels as f64,
+                s.voxels as f64 / 1e9,
+                s.bytes >> 20,
+                s.plan_ms,
+                s.emit_ms,
+                s.build_ms,
+                s.sampled_leaves,
+                s.linked,
+                s.city.buildings,
+                s.city.props,
+                s.city.roads,
+                s.city.unique_modules,
+                s.city.unique_tiles,
+                s.city.unique_props
+            );
+            if let Some(out) = a.get("out").filter(|_| cmd == "gen") {
+                std::fs::write(out, w.dag.to_bytes()).unwrap();
+                std::fs::write(format!("{out}.palette.json"), serde_json::to_string(&w.palette).unwrap()).unwrap();
+                println!("wrote {out}");
+            }
+            if cmd == "shot" {
+                let cam = Camera { pos: w.spawn + Vec3::new(0.0, 900.0, 2400.0), yaw: 0.35, pitch: -0.22, fov_y: 1.0 };
+                shot(&a, &w.dag, &w.palette, cam, &env_for(&w.spec));
+            }
+        }
+        "terrain" => terrain(&a),
+        "wfc" => wfc_bench(&a),
+        _ => {
+            eprintln!(
+                "usage: vx gen|shot [--prompt TEXT | --spec FILE] [--out FILE] [--w N --h N] [--cam x,y,z,yaw,pitch] [--frames N]"
+            );
+        }
+    }
+}

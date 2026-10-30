@@ -2,7 +2,8 @@
 // pnpm verify — the full gate. Run before every commit/PR (agents: always).
 //   1. cargo fmt --check
 //   2. cargo clippy (warnings are errors; includes the determinism lints in crates/*/clippy.toml)
-//   3. cargo test (wire fuzzing, physics, netcode soak over simulated networks, replay, rules)
+//   3. cargo test (wire fuzzing, physics, netcode soak over simulated networks, replay, rules;
+//      the voxel crates in release)
 //   4. contract drift check
 //   5. wasm build + TypeScript typecheck (Rust type changes surface here as TS errors)
 //   6. determinism: the probe hash must be identical natively and in wasm
@@ -29,7 +30,10 @@ const step = (name, cmd, args, opts = {}) => {
 step('rustfmt', 'cargo', ['fmt', '--all', '--check']);
 step('clippy', 'cargo', ['clippy', '--workspace', '--all-targets', '-q', '--', '-D', 'warnings']);
 step('clippy (wasm client)', 'cargo', ['clippy', '-p', 'gs-client', '--target', 'wasm32-unknown-unknown', '-q', '--', '-D', 'warnings']);
-step('cargo test', 'cargo', ['test', '--workspace', '-q']);
+step('cargo test', 'cargo', ['test', '--workspace', '-q', '--exclude', 'vx-core', '--exclude', 'vx-gen', '--exclude', 'vx-terrain', '--exclude', 'vx-render', '--exclude', 'vx-cli']);
+// The voxel crates build billions of voxels in their tests: run them optimised. GPU tests skip
+// themselves on machines without a GPU.
+step('voxel tests', 'cargo', ['test', '--release', '-q', '-p', 'vx-core', '-p', 'vx-gen', '-p', 'vx-terrain', '-p', 'vx-render']);
 step('contract', 'node', ['scripts/contract.mjs', '--check']);
 step('wasm build', 'node', ['scripts/build-wasm.mjs']);
 step('typecheck', 'pnpm', ['-r', '--silent', 'typecheck']);

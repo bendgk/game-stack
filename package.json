@@ -15,12 +15,13 @@
     "build": "node scripts/build-wasm.mjs --release && pnpm --filter web build && cargo build --release -p gs-server",
     "stack": "node scripts/stack.mjs",
     "typecheck": "pnpm -r typecheck",
-    "test": "cargo test --workspace && pnpm -r test && pnpm test:mcp",
+    "test": "cargo test --workspace --exclude vx-core --exclude vx-gen --exclude vx-terrain --exclude vx-render --exclude vx-cli && cargo test --release -p vx-core -p vx-gen -p vx-terrain -p vx-render && pnpm -r test && pnpm test:mcp",
     "verify": "node scripts/verify.mjs",
     "contract": "node scripts/contract.mjs --write",
     "netbot": "cargo run -q -p gs-server --bin netbot --",
     "e2e": "node scripts/e2e.mjs",
-    "test:mcp": "node --test tools/mcp-2d/lib.test.mjs tools/mcp-3d/lib.test.mjs"
+    "test:mcp": "node --test tools/mcp-2d/lib.test.mjs tools/mcp-3d/lib.test.mjs",
+    "vx": "cargo run --release -q -p vx-cli --"
   },
   "devDependencies": {
     "playwright-core": "1.64.1"
