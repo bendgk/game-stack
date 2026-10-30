@@ -7,7 +7,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +18,18 @@ export const PROTOCOL_VERSION = '2025-06-18';
 export function blenderPath(env = process.env) {
   if (env.GS3D_BLENDER) return env.GS3D_BLENDER;
   const mac = '/Applications/Blender.app/Contents/MacOS/Blender';
-  return existsSync(mac) ? mac : 'blender';
+  if (existsSync(mac)) return mac;
+  if (process.platform === 'win32') {
+    // The official installer puts it in "C:\\Program Files\\Blender Foundation\\Blender <ver>\\".
+    const base = join(env.ProgramFiles ?? 'C:\\Program Files', 'Blender Foundation');
+    try {
+      const dirs = readdirSync(base)
+        .filter((d) => d.startsWith('Blender'))
+        .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+      for (const d of dirs) if (existsSync(join(base, d, 'blender.exe'))) return join(base, d, 'blender.exe');
+    } catch {}
+  }
+  return 'blender';
 }
 
 /** A headless Blender running bridge.py, (re)started on demand. */

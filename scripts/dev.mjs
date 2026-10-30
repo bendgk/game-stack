@@ -22,7 +22,9 @@ const c = (n, s) => `\x1b[${n}m${s}\x1b[0m`;
 const log = (tag, color, line) => process.stdout.write(`${c(color, tag.padEnd(7))}${line}\n`);
 
 function run(tag, color, cmd, argv, env = {}) {
-  const p = spawn(cmd, argv, { cwd: root, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  // On Windows `pnpm` is a .cmd shim, which Node only runs through a shell.
+  const shell = process.platform === 'win32' && cmd === 'pnpm';
+  const p = spawn(cmd, argv, { cwd: root, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'], shell });
   const pipe = (s) => {
     let buf = '';
     s.on('data', (d) => {

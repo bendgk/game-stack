@@ -11,13 +11,15 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const step = (name, cmd, args, opts = {}) => {
   process.stdout.write(`\x1b[36m▶ ${name}\x1b[0m\n`);
   try {
-    return execFileSync(cmd, args, { cwd: root, stdio: opts.capture ? 'pipe' : 'inherit', encoding: 'utf8' });
+    // On Windows `pnpm` is a .cmd shim, which Node only runs through a shell.
+    const shell = process.platform === 'win32' && cmd === 'pnpm';
+    return execFileSync(cmd, args, { cwd: root, stdio: opts.capture ? 'pipe' : 'inherit', encoding: 'utf8', shell });
   } catch {
     console.error(`\x1b[31m✗ ${name} failed\x1b[0m`);
     process.exit(1);
@@ -37,7 +39,8 @@ step('mcp tests (gs2d, gs3d)', 'node', ['--test', 'tools/mcp-2d/lib.test.mjs', '
 process.stdout.write('\x1b[36m▶ determinism (native == wasm)\x1b[0m\n');
 const native = step('native probe', 'cargo', ['run', '-q', '-p', 'gs-server', '--', 'probe'], { capture: true }).trim();
 const dir = join(root, 'packages/engine/src/wasm');
-const core = await import(join(dir, 'gs_client.js'));
+// file:// URL, not a bare path: absolute Windows paths (C:\…) aren't valid import specifiers.
+const core = await import(pathToFileURL(join(dir, 'gs_client.js')).href);
 core.initSync({ module: readFileSync(join(dir, 'gs_client_bg.wasm')) });
 const wasm = core.determinism_probe();
 if (native !== wasm) {

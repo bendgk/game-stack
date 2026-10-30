@@ -43,11 +43,14 @@ Supports single-player, co-op and versus out of the box, with server-side bots t
 
 ## 1. Get running (10 minutes)
 
-You need **Rust** ([rustup.rs](https://rustup.rs)), **Node 22+** with **pnpm**
-(`npm i -g pnpm`), and ideally **Docker** (for Dragonfly + Postgres; without it everything still
-runs, just without persistence).
+You need **Rust**, **Node 22+** with **pnpm**, C build tools, and ideally **Docker** (for
+Dragonfly + Postgres; without it everything still runs, just without persistence).
+**Fresh machine? Follow [INSTALL.md](INSTALL.md)** (macOS, Windows, Linux; written so your
+coding agent can do it for you). `node scripts/setup.mjs --check` tells you what's missing and
+how to fix it on your OS.
 
 ```sh
+pnpm doctor     # what's installed / missing on this machine, with OS-specific fixes
 pnpm setup      # installs the wasm target + wasm-bindgen, JS deps, builds the wasm once
 pnpm dev        # Dragonfly + Postgres (docker), the Rust server, and Vite — with hot rebuilds
 ```

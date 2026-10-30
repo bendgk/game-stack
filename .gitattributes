@@ -1,0 +1,7 @@
+# Keep LF everywhere (Windows included): the contract test compares contract/schema.txt
+# byte-for-byte, rustfmt --check and the shell scripts expect LF.
+* text=auto eol=lf
+*.png binary
+*.glb binary
+*.wasm binary
+*.blend binary

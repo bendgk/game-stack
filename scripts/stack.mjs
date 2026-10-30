@@ -14,7 +14,7 @@ function lanIp() {
   for (const [name, addrs] of Object.entries(networkInterfaces())) {
     for (const a of addrs ?? []) {
       if (a.family !== 'IPv4' || a.internal) continue;
-      if (/^(docker|br-|veth|bridge|utun|vboxnet|vmnet)/.test(name)) continue;
+      if (/^(docker|br-|veth|bridge|utun|vboxnet|vmnet|vEthernet|VirtualBox|VMware|Loopback)/i.test(name)) continue;
       candidates.push(a.address);
     }
   }

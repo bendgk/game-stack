@@ -61,6 +61,13 @@ Step-by-step recipes for each row: `docs/RECIPES.md`. Architecture and the "why"
 7. **Keep TS a renderer.** If TS needs a number the sim knows, add it to `Hud`, `Event` or the
    render entity (`a`/`b` channels, flags). Don't re-derive it.
 
+## Setting up a machine
+
+Follow `INSTALL.md` (macOS / Windows / Linux, from nothing). Start with
+`node scripts/setup.mjs --check`: it prints every prerequisite with the fix for this OS. Steps
+that need a human (passwords, reboots, licence dialogs, firewall prompts) are marked 👤. Ask,
+don't guess.
+
 ## The loop
 
 ```sh
