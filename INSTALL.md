@@ -11,12 +11,13 @@ Assumes only: the operating system, a web browser, and Claude. Everything else i
 
 1. Install **Git** and **Node.js ≥ 22** using step 1 + step 3 for your OS below (Linux: the first two blocks; macOS needs
    steps 1–3). That's all the doctor needs to run.
-2. Clone and run the doctor (no pnpm needed yet):
+2. Get your own copy and run the doctor (no pnpm needed yet). With the GitHub CLI set up
+   ([GitHub section](#github-identity-login-and-your-own-fork)), fork it into your account:
    ```sh
-   git clone https://github.com/bendgk/game-stack.git
-   cd game-stack
+   gh repo fork bendgk/game-stack --clone && cd game-stack
    node scripts/setup.mjs --check
    ```
+   (No GitHub account yet? `git clone https://github.com/bendgk/game-stack.git` works too. Fork later.)
 3. It detects the OS and prints ✓/✗ for every prerequisite, with **the exact fix command for
    this OS** under each ✗. Apply the fixes (the per-OS sections below explain each one, and which
    need a human), open a new terminal, and re-run until every required line is ✓.
@@ -29,7 +30,8 @@ If anything is unclear, follow the full step-by-step section for your OS.
 
 | Tool | Why | Version | Needed for |
 | --- | --- | --- | --- |
-| Git | clone the repo | any recent | everything |
+| Git | version control: clone, commit, push | any recent | everything |
+| GitHub CLI (`gh`) + a GitHub account | fork the starter into your own account, log in, push | latest | saving/sharing your game |
 | C/C++ build tools (Xcode Command Line Tools / Visual Studio Build Tools) | Rust's linker | latest | everything |
 | Node.js | scripts, web client, MCP servers | **≥ 22** (LTS 24 recommended) | everything |
 | pnpm | JS package manager | **12.x** | everything |
@@ -65,6 +67,8 @@ echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
 eval "$(/opt/homebrew/bin/brew shellenv)"
 ```
 **Verify:** `brew --version`.
+
+Then the GitHub CLI: `brew install gh`. **Verify:** `gh --version`.
 
 ### 3. Node.js + pnpm
 ```sh
@@ -124,6 +128,12 @@ $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Env
 winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements
 ```
 **Verify:** `git --version`.
+
+GitHub CLI:
+```powershell
+winget install --id GitHub.cli -e --accept-source-agreements --accept-package-agreements
+```
+**Verify:** `gh --version` (after refreshing PATH).
 
 ### 2. Visual Studio C++ Build Tools (Rust's linker), *(admin)*
 ```powershell
@@ -199,6 +209,9 @@ sudo apt update && sudo apt install -y git build-essential pkg-config curl ca-ce
 ```
 **👤 HUMAN:** `sudo` asks for the password.
 
+GitHub CLI: `sudo apt install -y gh` [`sudo dnf install -y gh`]. On older Ubuntu, follow
+https://github.com/cli/cli/blob/trunk/docs/install_linux.md. **Verify:** `gh --version`.
+
 Node.js 24 via fnm, then pnpm:
 ```sh
 curl -fsSL https://fnm.vercel.app/install | bash
@@ -221,14 +234,48 @@ Firewall (if `ufw` is active): `sudo ufw allow 5173/tcp && sudo ufw allow 8080/t
 
 ---
 
+## GitHub: identity, login and your own fork
+
+Do this once per machine, on any OS (same commands in Terminal / PowerShell).
+
+1. **👤 HUMAN:** have a GitHub account (free at https://github.com/signup).
+2. Tell git who you are (shows on your commits; use the email of your GitHub account):
+   ```sh
+   git config --global user.name "Your Name"
+   git config --global user.email "you@example.com"
+   git config --global init.defaultBranch main
+   git config --global core.autocrlf false     # keep LF line endings (the repo's checks expect them)
+   ```
+   **Verify:** `git config --global user.email` prints it. (Agents: ask the person for their name
+   and email. Don't invent them.)
+3. Log in to GitHub:
+   ```sh
+   gh auth login --hostname github.com --git-protocol https --web
+   gh auth setup-git
+   ```
+   **👤 HUMAN:** it prints a one-time code and opens the browser. Paste the code and approve.
+   **Verify:** `gh auth status` shows "Logged in to github.com".
+4. Fork the starter into your account and clone your fork:
+   ```sh
+   gh repo fork bendgk/game-stack --clone --remote
+   cd game-stack
+   ```
+   `origin` is now your fork (push here) and `upstream` is the starter (pull updates from here).
+5. Save and share your work:
+   ```sh
+   git add -A && git commit -m "My first change"
+   git push
+   ```
+   Get starter updates later: `git pull upstream main`.
+
+---
+
 ## Every OS: get the game running
 
 ### 1. Get the code
-```sh
-git clone https://github.com/bendgk/game-stack.git
-cd game-stack
-```
-(Students: fork on GitHub first and clone your fork's URL instead.)
+Your fork from the [GitHub section](#github-identity-login-and-your-own-fork)
+(`gh repo fork bendgk/game-stack --clone --remote`), or a plain
+`git clone https://github.com/bendgk/game-stack.git`.
 
 ### 2. One-time project setup
 ```sh
@@ -283,6 +330,8 @@ through the firewall (Windows: step 8 above; macOS: click **Allow** if asked abo
 
 | Symptom | Fix |
 | --- | --- |
+| `git commit` says "Please tell me who you are" | Set `user.name` / `user.email` (GitHub section, step 2). |
+| `git push` asks for a password / is denied | `gh auth login` then `gh auth setup-git`; make sure `origin` is YOUR fork (`git remote -v`). |
 | Not sure what's missing | `node scripts/setup.mjs --check` (the doctor) lists every prerequisite with the fix for this OS. |
 | `command not found` / `not recognized` right after installing | New shell, or refresh PATH (Windows snippet above; macOS: `. "$HOME/.cargo/env"` and `eval "$(brew shellenv)"`). |
 | `link.exe` / `cc` not found while compiling Rust | Build tools missing: Windows step 2 / macOS step 1. |

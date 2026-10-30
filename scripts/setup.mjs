@@ -43,6 +43,7 @@ const FIX = {
     linux: 'https://docs.docker.com/engine/install/ (then: sudo usermod -aG docker $USER and log out/in)',
   },
   blender: { mac: 'brew install --cask blender', windows: 'winget install --id BlenderFoundation.Blender -e', linux: 'sudo snap install blender --classic   (or download from blender.org)' },
+  gh: { mac: 'brew install gh', windows: 'winget install --id GitHub.cli -e', linux: 'sudo apt install -y gh   (Fedora: sudo dnf install -y gh)' },
   chrome: { mac: 'brew install --cask google-chrome', windows: 'winget install --id Google.Chrome -e', linux: 'install Google Chrome from google.com/chrome' },
 };
 
@@ -85,6 +86,25 @@ const wb = run('wasm-bindgen');
 check('wasm-bindgen-cli 0.2.130', true, !!wb?.includes('0.2.130'), wb ?? 'missing', 'cargo install wasm-bindgen-cli --version 0.2.130 --locked --force', true);
 
 // --- optional ----------------------------------------------------------------------------------
+const email = gitOut ? run('git', ['config', '--global', 'user.email']) : null;
+const name = gitOut ? run('git', ['config', '--global', 'user.name']) : null;
+check(
+  'git identity (needed to commit)',
+  false,
+  !!(email && name),
+  email && name ? `${name} <${email}>` : 'not set',
+  'git config --global user.name "Your Name" && git config --global user.email "you@example.com"',
+);
+const ghOut = run('gh');
+const ghAuth = ghOut ? run('gh', ['auth', 'status']) !== null : false;
+check(
+  'GitHub CLI + login (fork & push)',
+  false,
+  ghAuth,
+  ghAuth ? 'logged in' : ghOut ? 'installed, not logged in' : 'missing',
+  ghOut ? 'gh auth login --web && gh auth setup-git' : 'gh',
+);
+
 const dockerOut = run('docker');
 const daemon = dockerOut ? run('docker', ['info', '--format', '{{.ServerVersion}}']) : null;
 check(
