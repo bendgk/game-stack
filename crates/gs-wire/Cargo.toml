@@ -1,0 +1,14 @@
+[package]
+name = "gs-wire"
+description = "The game-stack wire contract: a bounded, schema-fingerprinted binary codec"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = ["glam"]
+
+[dependencies]
+gs-wire-derive.workspace = true
+glam = { workspace = true, optional = true }

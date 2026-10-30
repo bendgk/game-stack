@@ -1,0 +1,19 @@
+[package]
+name = "gs-client"
+description = "The browser half: the same game + netcode compiled to wasm32, exposed to TypeScript"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gs-core.workspace = true
+gs-wire.workspace = true
+game = { workspace = true, features = ["ts"] }
+serde.workspace = true
+wasm-bindgen.workspace = true
+js-sys = "0.3.107"
+serde-wasm-bindgen = "0.6.5"

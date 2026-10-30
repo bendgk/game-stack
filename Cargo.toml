@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/gs-wire", "crates/gs-wire-derive", "crates/gs-core", "crates/game", "crates/gs-server"]
+
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+gs-wire = { path = "crates/gs-wire" }
+gs-wire-derive = { path = "crates/gs-wire-derive" }
+gs-core = { path = "crates/gs-core" }
+game = { path = "crates/game" }
+
+# Deterministic math: `libm` routes every transcendental through pure-Rust libm and
+# `scalar-math` disables SIMD, so native (server) and wasm32 (browser) agree bit-for-bit.
+glam = { version = "0.34.1", default-features = false, features = ["std", "libm", "scalar-math", "serde"] }
+libm = "0.2.16"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tsify = { version = "0.5.8", default-features = false, features = ["js"] }
+wasm-bindgen = "=0.2.130"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+# Overflow behaves the same in release as in tests: a wrapped tick counter is a bug, not a feature.
+overflow-checks = true
+
+[profile.wasm-release]
+inherits = "release"
+lto = "fat"
+panic = "abort"
+opt-level = 3

@@ -1,0 +1,6 @@
+packages:
+  - apps/*
+  - packages/*
+# three r187 shipped 2026-10-30; exempt it from pnpm's new-release quarantine.
+minimumReleaseAgeExclude:
+  - three@0.187.0

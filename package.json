@@ -1,0 +1,26 @@
+{
+  "name": "game-stack",
+  "private": true,
+  "type": "module",
+  "description": "Server-authoritative, deterministic, predicted LAN multiplayer over WebRTC \u2014 Rust core, React + three.js client",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "node scripts/dev.mjs",
+    "dev:offline": "node scripts/dev.mjs --no-server",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "build": "node scripts/build-wasm.mjs --release && pnpm --filter web build && cargo build --release -p gs-server",
+    "stack": "node scripts/stack.mjs",
+    "typecheck": "pnpm -r typecheck",
+    "test": "cargo test --workspace && pnpm -r test",
+    "verify": "node scripts/verify.mjs",
+    "contract": "node scripts/contract.mjs --write",
+    "netbot": "cargo run -q -p gs-server --bin netbot --",
+    "e2e": "node scripts/e2e.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.64.1"
+  }
+}

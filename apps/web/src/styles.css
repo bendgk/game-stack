@@ -1,0 +1,264 @@
+:root {
+  --bg: #0b0e1a;
+  --card: #151a2e;
+  --line: #262d52;
+  --fg: #e8ecff;
+  --dim: #8b93b8;
+  --accent: #4cc9f0;
+  --gold: #ffd166;
+  color-scheme: dark;
+  font: 15px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+}
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+  background: #0f1324;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+button.primary {
+  background: var(--accent);
+  color: #001018;
+  border: 0;
+  font-weight: 600;
+}
+button.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+}
+.dim {
+  color: var(--dim);
+}
+.center {
+  display: grid;
+  place-items: center;
+  height: 100%;
+}
+
+.lobby {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 40px 16px;
+  display: grid;
+  gap: 16px;
+}
+.lobby h1 {
+  margin: 0;
+  font-size: 44px;
+  letter-spacing: -1px;
+  background: linear-gradient(90deg, var(--gold), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.sub {
+  margin: 4px 0 0;
+  color: var(--dim);
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+}
+.card h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.card label {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  align-items: center;
+  gap: 10px;
+}
+.row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+.cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 700px) {
+  .cols {
+    grid-template-columns: 1fr;
+  }
+  .card label {
+    grid-template-columns: 1fr;
+  }
+}
+.list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+
+.game {
+  position: fixed;
+  inset: 0;
+}
+.leave {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+}
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(5, 7, 15, 0.6);
+  z-index: 20;
+}
+.hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+.hud .top {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+}
+.pill {
+  background: rgba(15, 19, 36, 0.8);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-weight: 600;
+}
+.goal {
+  position: relative;
+  width: 280px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(15, 19, 36, 0.8);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  font-size: 12px;
+  display: grid;
+  place-items: center;
+}
+.goal .bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, #06d6a0, var(--gold));
+}
+.goal span {
+  position: relative;
+  font-weight: 600;
+  color: #04121a;
+}
+.scores {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  margin: 0;
+  padding: 10px 14px;
+  list-style: none;
+  background: rgba(15, 19, 36, 0.8);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  min-width: 180px;
+  display: grid;
+  gap: 4px;
+}
+.scores li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.scores li.me {
+  color: var(--gold);
+}
+.scores i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.scores b {
+  margin-left: auto;
+}
+.dash {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 180px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(15, 19, 36, 0.8);
+  overflow: hidden;
+}
+.dash div {
+  height: 100%;
+  background: var(--accent);
+}
+.dash span {
+  position: absolute;
+  top: -18px;
+  width: 100%;
+  text-align: center;
+  font-size: 11px;
+  color: var(--dim);
+}
+.banner {
+  position: absolute;
+  top: 38%;
+  width: 100%;
+  text-align: center;
+  font-size: 48px;
+  font-weight: 800;
+  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.6);
+  color: var(--gold);
+}
+.notices {
+  position: absolute;
+  left: 12px;
+  top: 56px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--dim);
+}

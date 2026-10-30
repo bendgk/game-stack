@@ -1,0 +1,29 @@
+{
+  "name": "@gs/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser glue for game-stack: WebRTC transport, wasm session, input, React hooks, R3F primitives",
+  "exports": {
+    ".": "./src/index.ts",
+    "./three": "./src/three.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p .",
+    "test": "node --test --experimental-strip-types src/*.test.ts"
+  },
+  "peerDependencies": {
+    "@react-three/fiber": "^9.8.2",
+    "react": "^19.3.1",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@react-three/fiber": "9.8.2",
+    "@types/react": "19.3.0",
+    "@types/three": "0.186.0",
+    "react": "19.3.1",
+    "three": "0.187.0",
+    "typescript": "7.0.2",
+    "@types/node": "26.6.6"
+  }
+}

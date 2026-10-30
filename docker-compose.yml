@@ -1,0 +1,59 @@
+# One node, one LAN. `docker compose up --build` and open http://<this machine's LAN IP>:8080
+#
+# Game traffic is WebRTC over UDP 40000 (DataChannels). HTTP 8080 serves the web client and the
+# one-time WebRTC signaling POST. Set GS_PUBLIC_IP to this machine's LAN address (the launcher
+# `pnpm stack` does it for you) so browsers on other devices can reach the UDP port.
+
+services:
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    command: ["--proactor_threads=2", "--dbfilename=gs", "--snapshot_cron=* * * * *"]
+    ulimits:
+      memlock: -1
+    ports:
+      - "6379:6379"
+    volumes:
+      - dragonfly:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: gs
+      POSTGRES_PASSWORD: gs
+      POSTGRES_DB: gs
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gs -d gs"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  server:
+    build: .
+    depends_on:
+      dragonfly: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      GS_HTTP_ADDR: 0.0.0.0:8080
+      GS_UDP_PORT: "40000"
+      GS_PUBLIC_IP: ${GS_PUBLIC_IP:-127.0.0.1}
+      GS_REDIS_URL: redis://dragonfly:6379
+      DATABASE_URL: postgres://gs:gs@postgres:5432/gs
+      GS_WEB_DIR: /app/web
+      RUST_LOG: ${RUST_LOG:-info,str0m=warn,dimpl=warn}
+    ports:
+      - "8080:8080"
+      - "40000:40000/udp"
+    restart: unless-stopped
+
+volumes:
+  dragonfly:
+  postgres:

@@ -1,0 +1,13 @@
+[package]
+name = "gs-core"
+description = "game-stack engine core: deterministic sim contract, physics, and sans-IO netcode (server authority + client prediction)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+gs-wire.workspace = true
+glam.workspace = true
+libm.workspace = true
+serde.workspace = true

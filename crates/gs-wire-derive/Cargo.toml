@@ -1,0 +1,15 @@
+[package]
+name = "gs-wire-derive"
+description = "#[derive(Wire)] — the codegen half of the gs-wire contract"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

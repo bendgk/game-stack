@@ -1,0 +1,18 @@
+[package]
+name = "game"
+description = "THE GAME. Rules, state, input, render description — written once, runs on server and in the browser."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Generates TypeScript types for Input/Command/Event/Hud/Kind (enabled by gs-client for wasm).
+ts = ["dep:tsify", "dep:wasm-bindgen"]
+
+[dependencies]
+gs-core.workspace = true
+gs-wire.workspace = true
+serde.workspace = true
+tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
