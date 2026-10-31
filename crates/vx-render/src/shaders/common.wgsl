@@ -288,6 +288,13 @@ fn trace_dag(root: u32, root_level: u32, iside: u32, ro: vec3<f32>, rd: vec3<f32
     let inv = safe_inv(rd);
     let t0 = (vec3<f32>(0.0) - ro) * inv;
     let t1 = (vec3<f32>(side) - ro) * inv;
+    // Step the grid relative to the voxel the ray starts in: `ro` can be ~10⁵ voxels out where
+    // an f32 resolves only ~0.01, coarser than the nudges below (a ray landed in the wrong cell,
+    // crawled, or picked the wrong face: speckle and swimming far from the origin). `rl` is
+    // exact and small, so precision depends on how far the ray went, not where the world is.
+    let base_f = floor(ro);
+    let base = vec3<i32>(base_f);
+    let rl = ro - base_f;
     let tn = min(t0, t1);
     let tf = max(t0, t1);
     var t = max(max(max(tn.x, tn.y), tn.z), 0.0);
@@ -314,8 +321,8 @@ fn trace_dag(root: u32, root_level: u32, iside: u32, ro: vec3<f32>, rd: vec3<f32
         h.steps = it;
         if (t > tmax) { return h; }
         let bias = 0.005 + t * 1e-6;
-        let p = ro + rd * (t + bias);
-        let ip = clamp(vec3<i32>(floor(p)), vec3<i32>(0), vec3<i32>(maxc));
+        let p = rl + rd * (t + bias);
+        let ip = clamp(base + vec3<i32>(floor(p)), vec3<i32>(0), vec3<i32>(maxc));
         // Pop until the current node contains ip.
         loop {
             if (level >= root_level) { break; }
@@ -337,7 +344,7 @@ fn trace_dag(root: u32, root_level: u32, iside: u32, ro: vec3<f32>, rd: vec3<f32
             if (level == 1u) {
                 h.hit = true;
                 h.t = t;
-                h.n = entry_normal(ro, rd, t, vec3<f32>(ip), 1.0);
+                h.n = entry_normal(rl, rd, t, vec3<f32>(ip - base), 1.0);
                 h.voxel = ip;
                 h.mat = leaf_mat(node, ci);
                 // The 4³ node's prefiltered colour: the voxel's "mip" for albedo filtering.
@@ -353,7 +360,7 @@ fn trace_dag(root: u32, root_level: u32, iside: u32, ro: vec3<f32>, rd: vec3<f32
                 if (lod_rnd < cov) {
                     h.hit = true;
                     h.t = t;
-                    h.n = entry_normal(ro, rd, t, vec3<f32>((ip >> vec3<u32>(s)) << vec3<u32>(s)), size);
+                    h.n = entry_normal(rl, rd, t, vec3<f32>(((ip >> vec3<u32>(s)) << vec3<u32>(s)) - base), size);
                     h.voxel = ip;
                     h.mat = MAT_LOD;
                     h.avg = avg;
@@ -369,9 +376,9 @@ fn trace_dag(root: u32, root_level: u32, iside: u32, ro: vec3<f32>, rd: vec3<f32
         }
         // Leave the empty cube of 2^empty_shift voxels around ip.
         let sz = f32(1u << empty_shift);
-        let lo = vec3<f32>((ip >> vec3<u32>(empty_shift)) << vec3<u32>(empty_shift));
+        let lo = vec3<f32>(((ip >> vec3<u32>(empty_shift)) << vec3<u32>(empty_shift)) - base);
         let bound = lo + select(vec3<f32>(0.0), vec3<f32>(sz), rd > vec3<f32>(0.0));
-        var te = (bound - ro) * inv;
+        var te = (bound - rl) * inv;
         // Axes the ray barely moves along can't be the exit (their inverse is unreliable).
         te = select(te, vec3<f32>(1e30), abs(rd) < vec3<f32>(1e-7));
         // Nor can a face that doesn't move the ray forward: a ray running along a voxel plane
@@ -465,11 +472,22 @@ fn sun_shadow(p: vec3<f32>, lod_k: f32) -> f32 {
 /// of a distance field). Far away, a hit's own normal is the face of a coarse cube, so slopes
 /// shade as stair-stepped stripes; the gradient sees the actual slope.
 fn smooth_normal(p: vec3<f32>, level: u32, fallback: vec3<f32>) -> vec3<f32> {
+    // Gradient of the *trilinearly interpolated* coverage over the 8 node centres around p.
+    // Coverage is constant inside a node, so plain central differences gave normals that jumped
+    // at every node boundary: a grid of facets that shimmered into moiré as you moved.
     let s = f32(1u << (2u * level));
+    let q = p / s - 0.5;
+    let b = floor(q);
+    let f = q - b;
+    var c: array<f32, 8>;
+    for (var i = 0u; i < 8u; i++) {
+        let o = vec3<f32>(f32(i & 1u), f32((i >> 1u) & 1u), f32(i >> 2u));
+        c[i] = coverage((b + o + 0.5) * s, level);
+    }
     let g = vec3<f32>(
-        coverage(p + vec3<f32>(s, 0.0, 0.0), level) - coverage(p - vec3<f32>(s, 0.0, 0.0), level),
-        coverage(p + vec3<f32>(0.0, s, 0.0), level) - coverage(p - vec3<f32>(0.0, s, 0.0), level),
-        coverage(p + vec3<f32>(0.0, 0.0, s), level) - coverage(p - vec3<f32>(0.0, 0.0, s), level),
+        mix(mix(c[1] - c[0], c[3] - c[2], f.y), mix(c[5] - c[4], c[7] - c[6], f.y), f.z),
+        mix(mix(c[2] - c[0], c[3] - c[1], f.x), mix(c[6] - c[4], c[7] - c[5], f.x), f.z),
+        mix(mix(c[4] - c[0], c[5] - c[1], f.x), mix(c[6] - c[2], c[7] - c[3], f.x), f.y),
     );
     if (dot(g, g) < 1e-4) { return fallback; }
     let n = -normalize(g);

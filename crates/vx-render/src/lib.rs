@@ -46,7 +46,14 @@ impl Camera {
     pub fn forward(&self) -> Vec3 {
         Vec3::new(self.yaw.sin() * self.pitch.cos(), self.pitch.sin(), -self.yaw.cos() * self.pitch.cos())
     }
-    /// Right-handed view, perspective with depth 0..1 (wgpu clip space).
+    /// Right-handed view, perspective with depth 0..1 (wgpu clip space), **camera-relative**:
+    /// it projects `p - pos`, never `p`.
+    ///
+    /// Why: positions are in voxels, so the camera sits ~10⁴–10⁵ units from the origin, where an
+    /// f32 only resolves ~0.001–0.01. A matrix that carried that translation made every ray
+    /// direction "near-plane point − camera" (0.25 apart) lose several pixels of precision:
+    /// directions snapped to a grid that shifted as you moved (moiré bands, micro-jitter, TAA
+    /// that could never settle). Subtracting the camera first keeps every number small.
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
         let f = self.forward().normalize();
         let s = f.cross(Vec3::Y).normalize();
@@ -55,7 +62,7 @@ impl Camera {
             glam::Vec4::new(s.x, up.x, -f.x, 0.0),
             glam::Vec4::new(s.y, up.y, -f.y, 0.0),
             glam::Vec4::new(s.z, up.z, -f.z, 0.0),
-            glam::Vec4::new(-s.dot(self.pos), -up.dot(self.pos), f.dot(self.pos), 1.0),
+            glam::Vec4::new(0.0, 0.0, 0.0, 1.0),
         );
         let (near, far) = (0.25f32, 1e7f32);
         let h = 1.0 / (self.fov_y * 0.5).tan();
@@ -990,3 +997,41 @@ impl Renderer {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod headless;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The primary-ray direction for pixel (px, py) the way trace.wgsl computes it (f32).
+    fn ray(inv: Mat4, px: f32, py: f32, w: f32, h: f32) -> Vec3 {
+        let ndc = glam::Vec4::new(px / w * 2.0 - 1.0, 1.0 - py / h * 2.0, 0.0, 1.0);
+        let n = inv * ndc;
+        (n.truncate() / n.w).normalize()
+    }
+
+    /// Far from the origin (the Far Lands problem) ray directions must still be exact to a
+    /// small fraction of a pixel, or the image swims and shows moiré as the camera moves.
+    #[test]
+    fn rays_stay_exact_far_from_the_origin() {
+        let (w, h) = (1920.0, 1080.0);
+        for pos in [Vec3::new(8192.5, 1100.3, 8191.7), Vec3::new(131_072.3, 2048.9, 98_304.1)] {
+            let cam = Camera { pos, yaw: 0.7, pitch: -0.2, fov_y: 1.2 };
+            let inv = cam.view_proj(w / h).inverse();
+            let pixel = cam.fov_y / h; // radians per pixel
+            let mut worst = 0.0f32;
+            for (px, py) in [(0.5, 0.5), (960.3, 540.7), (1919.5, 1079.5), (100.25, 900.75)] {
+                // Reference in f64: the exact pinhole direction for this pixel.
+                let f = cam.forward().as_dvec3().normalize();
+                let s = f.cross(glam::DVec3::Y).normalize();
+                let up = s.cross(f);
+                let th = (cam.fov_y as f64 * 0.5).tan();
+                let x = (px as f64 / w as f64 * 2.0 - 1.0) * th * (w / h) as f64;
+                let y = (1.0 - py as f64 / h as f64 * 2.0) * th;
+                let exact = (f + s * x + up * y).normalize();
+                let got = ray(inv, px, py, w, h).as_dvec3();
+                worst = worst.max(got.angle_between(exact) as f32 / pixel);
+            }
+            assert!(worst < 0.01, "ray direction off by {worst:.3} px at {pos:?}");
+        }
+    }
+}

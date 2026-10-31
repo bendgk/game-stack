@@ -42,7 +42,7 @@ fn post_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Crepuscular rays (god rays): march toward the sun on screen and gather how much bright
     // sky lies between this pixel and the sun; occluders cut the shafts.
     let sd = normalize(u.sun_dir.xyz);
-    let sc = u.view_proj * vec4<f32>(u.cam_pos.xyz + sd * 1e5, 1.0);
+    let sc = u.view_proj * vec4<f32>(sd * 1e5, 1.0);
     if (sc.w > 0.0 && sd.y > -0.05) {
         let suv = vec2<f32>(sc.x / sc.w * 0.5 + 0.5, 0.5 - sc.y / sc.w * 0.5);
         let uv = (vec2<f32>(gid.xy) + 0.5) * u.out_res.zw;

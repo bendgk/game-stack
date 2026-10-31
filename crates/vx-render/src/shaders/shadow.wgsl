@@ -17,7 +17,7 @@ fn shadow_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let n = textureLoad(g_nrm, c, 0).xyz;
         let sd = normalize(u.sun_dir.xyz);
         if (dot(n, sd) > 0.0 && u.world.w != 102u) {
-            vis = sun_shadow(gp.xyz + n * (0.05 + gp.w * u.params.x * 3.0), max(u.params.x * 8.0, 0.012));
+            vis = sun_shadow(u.cam_pos.xyz + gp.xyz + n * (0.05 + gp.w * u.params.x * 3.0), max(u.params.x * 8.0, 0.012));
         }
     }
     textureStore(o_vis, vec2<i32>(gid.xy), vec4<f32>(vis, 0.0, 0.0, 0.0));

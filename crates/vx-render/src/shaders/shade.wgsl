@@ -30,7 +30,8 @@ fn shadow_at(c: vec2<i32>, p: vec3<f32>, n: vec3<f32>, footprint: f32, off: vec3
         let o = vec2<i32>(k & 1, k >> 1);
         let hcell = clamp(base + o, vec2<i32>(0), hmax);
         let full = min(hcell * 2, vec2<i32>(u.res.xy) - 1);
-        let sp = textureLoad(g_pos, full, 0);
+        var sp = textureLoad(g_pos, full, 0);
+        sp = vec4<f32>(sp.xyz + u.cam_pos.xyz, sp.w);
         let sn = textureLoad(g_nrm, full, 0).xyz;
         if (sp.w < 0.0) { continue; }
         // Same surface: on our tangent plane, close by, similar normal.
@@ -184,8 +185,8 @@ fn shade_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let albedo = ar.rgb;
     let rough = ar.w;
     let mat = textureLoad(g_mat, c, 0).x;
-    let p = gp.xyz;
-    let v = normalize(u.cam_pos.xyz - p);
+    let p = u.cam_pos.xyz + gp.xyz; // g_pos is camera-relative
+    let v = normalize(-gp.xyz);
     let rd = -v;
     var metal = 0.0;
     var flags = 0u;

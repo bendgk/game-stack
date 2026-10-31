@@ -120,11 +120,14 @@ fn taa_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var p4: vec4<f32>;
     var p4_prev: vec4<f32>;
     if (gp.w < 0.0) {
-        p4 = vec4<f32>(u.cam_pos.xyz + gp.xyz * 1e5, 1.0);
-        p4_prev = vec4<f32>(u.prev_cam_pos.xyz + gp.xyz * 1e5, 1.0);
-    } else {
-        p4 = vec4<f32>(gp.xyz, 1.0);
+        p4 = vec4<f32>(gp.xyz * 1e5, 1.0);
         p4_prev = p4;
+    } else {
+        // Camera-relative throughout: g_pos is relative to this frame's camera, the matrices
+        // have no translation, and the camera's own move between frames is an exact difference
+        // of two nearby floats (no large-number rounding in the reprojection).
+        p4 = vec4<f32>(gp.xyz, 1.0);
+        p4_prev = vec4<f32>(gp.xyz + (u.cam_pos.xyz - u.prev_cam_pos.xyz), 1.0);
     }
     let cc = u.view_proj * p4;
     let pc = u.prev_view_proj * p4_prev;
