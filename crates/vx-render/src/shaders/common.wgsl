@@ -143,7 +143,7 @@ fn horizon_ground(d: vec3<f32>) -> vec3<f32> {
 
 // Hash-based value noise (2D) for clouds.
 fn hn2(q: vec2<f32>) -> f32 {
-    return f32(pcg(bitcast<u32>(i32(q.x)) * 73856093u ^ bitcast<u32>(i32(q.y)) * 19349663u) & 0xffffu) / 65535.0;
+    return f32(pcg((bitcast<u32>(i32(q.x)) * 73856093u) ^ (bitcast<u32>(i32(q.y)) * 19349663u)) & 0xffffu) / 65535.0;
 }
 fn noise2(p: vec2<f32>) -> f32 {
     let i = floor(p);
