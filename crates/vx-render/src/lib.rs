@@ -96,7 +96,8 @@ impl Default for Env {
             sun_azimuth: 0.8,
             sun_intensity: 22.0,
             fog: 0.0012,
-            exposure: 0.18,
+            // Tuned for the PBR Neutral tonemapper: sunlit white ≈ just below white.
+            exposure: 0.065,
             lod: 1.0,
             gi_distance: 2048.0,
             tint: Vec3::ONE,
@@ -116,11 +117,16 @@ impl Env {
             fog: 0.0003 + haze.clamp(0.0, 1.0) * 0.0025,
             ..Default::default()
         };
-        if elevation < 0.08 {
-            let dark = ((0.08 - elevation) / 0.4).clamp(0.0, 1.0);
-            env.exposure = 0.18 + dark * 0.9;
-            env.bloom = 0.2 + dark * 0.1;
-        }
+        // Exposure from the light actually arriving (sun through the atmosphere + sky), so
+        // dawn, noon and dusk all land at a sensible brightness. Analytic, not measured from the
+        // image: auto-exposure that reads the frame pumps and flickers.
+        let s = elevation.sin();
+        let transmit = (-0.09 / s.max(0.03)).exp();
+        let sun = if s > 0.0 { env.sun_intensity * transmit * s.max(0.1) * 0.7 } else { 0.0 };
+        let sky = 0.25 + 1.25 * ((elevation + 0.1) / 0.4).clamp(0.0, 1.0);
+        env.exposure = (0.9 / (sun + sky)).clamp(0.05, 0.9);
+        let dark = ((0.08 - elevation) / 0.4).clamp(0.0, 1.0);
+        env.bloom = 0.2 + dark * 0.1;
         env
     }
 
@@ -388,6 +394,9 @@ pub struct Renderer {
     targets: Targets,
     frame: u32,
     prev_vp: Mat4,
+    /// Consecutive frames with an unchanged camera and sun: TAA converges instead of tracking.
+    still: u32,
+    prev_sun: Vec3,
     prev_pos: Vec3,
     world: [u32; 4],
     pub info: WorldInfo,
@@ -570,6 +579,8 @@ impl Renderer {
             targets,
             frame: 0,
             prev_vp: Mat4::IDENTITY,
+            still: 0,
+            prev_sun: Vec3::ZERO,
             prev_pos: Vec3::ZERO,
             world: [0; 4],
             info: WorldInfo::default(),
@@ -666,6 +677,17 @@ impl Renderer {
         let Some(scene) = self.scene.clone() else { return };
         let (w, h) = (self.targets.w, self.targets.h);
         let vp = cam.view_proj(w as f32 / h as f32);
+        let sun = env.sun_dir();
+        let same_view = self.frame > 0
+            && vp
+                .to_cols_array()
+                .iter()
+                .zip(self.prev_vp.to_cols_array())
+                .all(|(a, b)| (a - b).abs() <= 1e-6 * a.abs().max(1.0))
+            && cam.pos == self.prev_pos
+            && sun == self.prev_sun;
+        self.still = if same_view { self.still.saturating_add(1) } else { 0 };
+        self.prev_sun = sun;
         if self.frame == 0 {
             self.prev_vp = vp;
             self.prev_pos = cam.pos;
@@ -673,7 +695,6 @@ impl Renderer {
         let jx = (halton(self.frame % 16 + 1, 2) - 0.5) * 2.0 / w as f32;
         let jy = (halton(self.frame % 16 + 1, 3) - 0.5) * 2.0 / h as f32;
         let pixel_angle = cam.fov_y / h as f32;
-        let sun = env.sun_dir();
         let u = Uniforms {
             inv_view_proj: vp.inverse().to_cols_array_2d(),
             view_proj: vp.to_cols_array_2d(),
@@ -686,7 +707,7 @@ impl Renderer {
             world: [self.world[0], self.world[1], self.world[2], self.debug_view],
             params: [pixel_angle * env.lod, env.fog, env.gi_distance, env.night()],
             tint: [env.tint.x, env.tint.y, env.tint.z, 0.0],
-            extra: [self.inst_count, 0, 0, 0],
+            extra: [self.inst_count, self.still, 0, 0],
         };
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
         let srgb_target = self.target_format.is_srgb();

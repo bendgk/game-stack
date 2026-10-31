@@ -107,7 +107,8 @@ fn shade_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ndl = max(dot(n, sd), 0.0);
     var shadow = 0.0;
     if (ndl > 0.0) {
-        shadow = sun_shadow(p + off, lod_k * 4.0);
+        // Coarser occluders far away: sub-pixel bumps shouldn't speckle a distant slope.
+        shadow = sun_shadow(p + off * 2.0, lod_k * 8.0);
     }
     let sun = sun_color();
 
@@ -116,7 +117,7 @@ fn shade_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Sunlight bounced off nearby sunlit ground and walls: strongest for surfaces facing down
     // or sideways, a little for everything (keeps shadows from going cold blue).
     let bounce = sun * max(sd.y, 0.0) * vec3<f32>(0.11, 0.1, 0.085) * (0.3 + 0.7 * clamp(0.5 - n.y * 0.5, 0.0, 1.0));
-    let ambient = (sky_ambient(n) + bounce + moon_light()) * ao;
+    let ambient = (sky_ambient(n) * 1.35 + bounce * 1.3 + moon_light()) * ao;
 
     let f0 = mix(vec3<f32>(0.04), albedo, metal);
     let nv = max(dot(n, v), 0.0);
