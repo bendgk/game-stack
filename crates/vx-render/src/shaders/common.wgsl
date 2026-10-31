@@ -376,6 +376,16 @@ fn coverage(p: vec3<f32>, level: u32) -> f32 {
     return 0.0;
 }
 
+/// Hard sun shadow: 1 if `p` (just off a surface) sees the sun. Occluders are resolved more
+/// coarsely the further the ray travels (`lod_k`), and a ray that hasn't hit anything within
+/// its step budget counts as lit; both depend only on the world point, so they can't flicker.
+fn sun_shadow(p: vec3<f32>, lod_k: f32) -> f32 {
+    let sd = normalize(u.sun_dir.xyz);
+    if (sd.y <= -0.02) { return 0.0; }
+    let h = trace(p, sd, 1e6, lod_k, 0.5, 72u);
+    return select(1.0, 0.0, h.hit);
+}
+
 /// A smooth surface normal from the coverage gradient around `p` at `level` (like the gradient
 /// of a distance field). Far away, a hit's own normal is the face of a coarse cube, so slopes
 /// shade as stair-stepped stripes; the gradient sees the actual slope.

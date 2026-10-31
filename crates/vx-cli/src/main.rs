@@ -2,6 +2,8 @@
 //!
 //!   vx gen   --prompt "neon city at night"  [--spec spec.json] [--out world.vxd]
 //!   vx shot  --prompt "..." --out shot.png  [--w 1920 --h 1080] [--cam x,y,z,yaw,pitch] [--frames 64]
+//!   vx bench --bundle worlds/<hash>.vxw [--w 2880 --h 1720 --scale 0.5] [--cam x,y,z,yaw,pitch]
+//!            (render-time benchmark of a saved world at a given output size and render scale)
 //!   vx wfc   --size 1024 [--out roads.png] [--cpu]     (GPU wave function collapse benchmark)
 //!   vx terrain --relief mountains --erode gpu --out land.png  [--size 512] [--iters 400]
 //!              [--voxel 4] [--blocky 16] [--sea 0.3] [--seed 7]   (reliefs: hills mountains island canyons mesas plains)
@@ -254,6 +256,72 @@ fn wfc_bench(a: &HashMap<String, String>) {
     }
 }
 
+/// Time the renderer on a saved world bundle: output `w`×`h`, ray traced at `scale`.
+fn bench(a: &HashMap<String, String>) {
+    let path = a.get("bundle").expect("--bundle path/to/world.vxw");
+    let bytes = std::fs::read(path).expect("read bundle");
+    let (meta, dag) = vx_gen::bundle::decode(&bytes).expect("decode bundle");
+    let get = |k: &str, d: f32| a.get(k).and_then(|v| v.parse().ok()).unwrap_or(d);
+    let (w, h) = (get("w", 2880.0) as u32, get("h", 1720.0) as u32);
+    let scale = get("scale", 0.5);
+    let mut hl = Headless::new(w, h).expect("gpu");
+    hl.r.set_world(&dag, &meta.palette).expect("upload");
+    hl.r.resize((w as f32 * scale) as u32, (h as f32 * scale) as u32);
+    let sp = Vec3::from(meta.spawn);
+    let cam = cam_arg(a).unwrap_or(Camera { pos: sp + Vec3::new(0.0, 51.0, 0.0), yaw: 0.0, pitch: 0.0, fov_y: 1.15 });
+    let spec = vx_gen::SceneSpec { time_of_day: get("hour", meta.spec.time_of_day), ..meta.spec.clone() };
+    let (elev, az) = spec.sun();
+    let env = Env::from_sun(elev, az, spec.fog);
+    if a.contains_key("trace-only") {
+        hl.r.debug_view = 99;
+    }
+    if let Some(d) = a.get("debug").and_then(|v| v.parse().ok()) {
+        hl.r.debug_view = d; // 101 no AO, 102 no shadows, 103 no reflections (profiling)
+    }
+    hl.render(&cam, &env, 10, 0.0); // warm-up (pipelines, caches)
+    let profiling = hl.r.enable_profiling();
+    // Moving camera: no still-frame convergence shortcut, like walking.
+    // Report the fastest and the median frame: other GPU users (a browser tab, a compile) only
+    // ever add time, so the minimum is the closest to the renderer's own cost.
+    let n = 90;
+    let mut times: Vec<f64> = (0..n)
+        .map(|i| {
+            let c = Camera { pos: cam.pos + Vec3::new(0.0, 0.0, -(i as f32) * 2.7), ..cam };
+            hl.render(&c, &env, 1, i as f32 / 60.0)
+        })
+        .collect();
+    times.sort_by(|a, b| a.total_cmp(b));
+    if profiling {
+        // GPU time per pass, best of 20 frames (immune to other GPU users).
+        let mut best: Vec<(&str, f64)> = Vec::new();
+        for i in 0..20 {
+            let c = Camera { pos: cam.pos + Vec3::new(0.0, 0.0, -(i as f32) * 2.7), ..cam };
+            hl.render(&c, &env, 1, 0.0);
+            let p = hl.r.read_profile();
+            if best.is_empty() {
+                best = p;
+            } else {
+                for (b, x) in best.iter_mut().zip(p) {
+                    b.1 = b.1.min(x.1);
+                }
+            }
+        }
+        let total: f64 = best.iter().map(|b| b.1).sum();
+        println!(
+            "GPU: {} · total {total:.2} ms",
+            best.iter().map(|(n, t)| format!("{n} {t:.2}")).collect::<Vec<_>>().join(" · ")
+        );
+    }
+    println!(
+        "{:.2} ms/frame best, {:.2} median · output {w}x{h} · traced {}x{} · {}",
+        times[0],
+        times[n / 2],
+        (w as f32 * scale) as u32,
+        (h as f32 * scale) as u32,
+        hl.adapter_info
+    );
+}
+
 fn main() {
     let (cmd, a) = args();
     match cmd.as_str() {
@@ -329,6 +397,7 @@ fn main() {
         }
         "terrain" => terrain(&a),
         "wfc" => wfc_bench(&a),
+        "bench" => bench(&a),
         _ => {
             eprintln!(
                 "usage: vx gen|shot [--prompt TEXT | --spec FILE] [--out FILE] [--w N --h N] [--cam x,y,z,yaw,pitch] [--frames N]"

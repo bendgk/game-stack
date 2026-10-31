@@ -13,6 +13,39 @@
 @group(1) @binding(2) var g_alb: texture_2d<f32>;
 @group(1) @binding(3) var g_mat: texture_2d<u32>;
 @group(1) @binding(4) var o_hdr: texture_storage_2d<rgba16float, write>;
+@group(1) @binding(5) var s_vis: texture_2d<f32>;
+
+/// Sun visibility from the half-resolution shadow pass: the 4 nearest samples, weighted by
+/// how close their surface point and normal are to ours. None close enough (depth edges,
+/// thin objects): trace our own ray.
+fn shadow_at(c: vec2<i32>, p: vec3<f32>, n: vec3<f32>, footprint: f32, off: vec3<f32>, lod_k: f32) -> f32 {
+    let hc = vec2<f32>(c) * 0.5 - 0.25;
+    let base = vec2<i32>(floor(hc));
+    let f = hc - vec2<f32>(base);
+    let hmax = (vec2<i32>(u.res.xy) + 1) / 2 - 1;
+    var sum = 0.0;
+    var wsum = 0.0;
+    let tol = max(footprint * 3.0, 0.5);
+    for (var k = 0; k < 4; k++) {
+        let o = vec2<i32>(k & 1, k >> 1);
+        let hcell = clamp(base + o, vec2<i32>(0), hmax);
+        let full = min(hcell * 2, vec2<i32>(u.res.xy) - 1);
+        let sp = textureLoad(g_pos, full, 0);
+        let sn = textureLoad(g_nrm, full, 0).xyz;
+        if (sp.w < 0.0) { continue; }
+        // Same surface: on our tangent plane, close by, similar normal.
+        let plane = abs(dot(sp.xyz - p, n));
+        let near = length(sp.xyz - p);
+        if (plane > tol || near > tol * 4.0 || dot(sn, n) < 0.9) { continue; }
+        let wb = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
+        sum += textureLoad(s_vis, hcell, 0).x * (wb + 1e-3);
+        wsum += wb + 1e-3;
+    }
+    if (wsum < 0.3) {
+        return sun_shadow(p + off * 2.0, max(lod_k * 8.0, 0.012));
+    }
+    return sum / wsum;
+}
 
 fn ggx(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32) -> f32 {
     let h = normalize(v + l);
@@ -39,9 +72,65 @@ fn fog(col: vec3<f32>, rd: vec3<f32>, dist_vox: f32, origin_y: f32) -> vec3<f32>
     return mix(col, inscatter, f);
 }
 
-/// Ambient occlusion by cone tracing the coverage pyramid: 4 cones around the normal, 5 steps
-/// each, every step reading one node whose size matches the cone's width there.
+// Ambient occlusion by cone tracing the coverage pyramid: 4 cones around the normal, 4 steps
+// each, every step reading one node whose size matches the cone's width there.
+// The samples are all near the shading point, so instead of descending from the root for each
+// one, we record the shading point's path once and start each lookup from the deepest node the
+// sample shares with it (usually saving 5 of 8 levels).
+var<private> anc: array<u32, 12>;
+var<private> anc_low: u32;
+var<private> anc_ip: vec3<i32>;
+
+fn record_path(p: vec3<f32>) {
+    anc_ip = vec3<i32>(floor(p));
+    var node = u.world.x;
+    var l = u.world.y;
+    anc[l] = node;
+    anc_low = l;
+    if (any(anc_ip < vec3<i32>(0)) || any(anc_ip >= vec3<i32>(i32(u.world.z)))) { return; }
+    loop {
+        if (l <= 1u) { break; }
+        let s = 2u * (l - 1u);
+        let c3 = (anc_ip >> vec3<u32>(s)) & vec3<i32>(3);
+        let ci = u32(c3.x | (c3.y << 2u) | (c3.z << 4u));
+        if (!mask_bit(node, ci)) { break; }
+        node = child_ptr(node, ci);
+        l -= 1u;
+        anc[l] = node;
+        anc_low = l;
+    }
+}
+
+fn coverage_near(q: vec3<f32>, level: u32) -> f32 {
+    let iq = vec3<i32>(floor(q));
+    if (any(iq < vec3<i32>(0)) || any(iq >= vec3<i32>(i32(u.world.z)))) { return 0.0; }
+    // Deepest recorded ancestor that also contains q.
+    var l = anc_low;
+    loop {
+        if (l >= u.world.y) { break; }
+        let sh = vec3<u32>(2u * l);
+        if (all((iq >> sh) == (anc_ip >> sh))) { break; }
+        l += 1u;
+    }
+    var node = anc[l];
+    loop {
+        let s = 2u * (l - 1u);
+        let c3 = (iq >> vec3<u32>(s)) & vec3<i32>(3);
+        let ci = u32(c3.x | (c3.y << 2u) | (c3.z << 4u));
+        if (!mask_bit(node, ci)) { return 0.0; }
+        if (l == 1u) { return 1.0; }
+        let child = child_ptr(node, ci);
+        if (l - 1u <= level) {
+            return f32(nodes[child + 2u] >> 24u) / 255.0;
+        }
+        node = child;
+        l -= 1u;
+    }
+    return 0.0;
+}
+
 fn cone_ao(p: vec3<f32>, n: vec3<f32>) -> f32 {
+    record_path(p + n * 1.5);
     let up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(n.y) > 0.9);
     let t = normalize(cross(up, n));
     let b = cross(n, t);
@@ -51,25 +140,16 @@ fn cone_ao(p: vec3<f32>, n: vec3<f32>) -> f32 {
         let dir = normalize(n + (t * cos(a) + b * sin(a)) * 0.75);
         var occ = 0.0;
         var dist = 3.0;
-        for (var k = 0; k < 5; k++) {
-            // Node size ≤ half the distance travelled, so the node never reaches back into the
-            // surface we start from.
+        for (var k = 0; k < 4; k++) {
+            // Node size ≤ half the distance travelled, so it never reaches back into the surface.
             let level = u32(clamp(floor(log2(dist * 0.5) * 0.5), 0.0, 4.0));
             let q = p + n * 1.5 + dir * dist;
-            occ += (1.0 - occ) * coverage(q, level) * 0.85;
-            dist *= 2.6;
+            occ += (1.0 - occ) * coverage_near(q, level) * 0.85;
+            dist *= 3.2;
         }
         vis += 1.0 - occ;
     }
     return vis * 0.25;
-}
-
-/// Hard sun shadow: 1 if `p` (just off a surface) sees the sun.
-fn sun_shadow(p: vec3<f32>, lod_k: f32) -> f32 {
-    let sd = normalize(u.sun_dir.xyz);
-    if (sd.y <= -0.02) { return 0.0; }
-    let h = trace(p, sd, 1e6, lod_k, 0.5, 160u);
-    return select(1.0, 0.0, h.hit);
 }
 
 @compute @workgroup_size(8, 8)
@@ -108,12 +188,14 @@ fn shade_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var shadow = 0.0;
     if (ndl > 0.0) {
         // Coarser occluders far away: sub-pixel bumps shouldn't speckle a distant slope.
-        shadow = sun_shadow(p + off * 2.0, lod_k * 8.0);
+        shadow = 1.0;
+        if (u.world.w != 102u) { shadow = shadow_at(c, p, n, gp.w * lod_k, off, lod_k); }
     }
     let sun = sun_color();
 
     // Ambient: sky over the hemisphere + light bounced off the (sunlit) ground, occluded.
-    let ao = cone_ao(p, n);
+    var ao = 1.0;
+    if (u.world.w != 101u) { ao = cone_ao(p, n); }
     // Sunlight bounced off nearby sunlit ground and walls: strongest for surfaces facing down
     // or sideways, a little for everything (keeps shadows from going cold blue).
     let bounce = sun * max(sd.y, 0.0) * vec3<f32>(0.11, 0.1, 0.085) * (0.3 + 0.7 * clamp(0.5 - n.y * 0.5, 0.0, 1.0));
@@ -136,9 +218,9 @@ fn shade_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Reflections: a single mirror ray for water, glass and polished metal; sky light otherwise.
     let r = reflect(rd, n);
     var env = sky_ambient(r) * ao;
-    let mirror = (flags & (F_WATER | F_GLASS)) != 0u || (metal > 0.5 && rough < 0.25);
+    let mirror = ((flags & (F_WATER | F_GLASS)) != 0u || (metal > 0.5 && rough < 0.25)) && u.world.w != 103u && gp.w < 2000.0;
     if (mirror) {
-        let h = trace(p + off, r, 8192.0, lod_k * 4.0, 0.5, 128u);
+        let h = trace(p + off, r, 6000.0, lod_k * 4.0, 0.5, 96u);
         if (h.hit) {
             let a2 = hit_albedo(h.mat, h.avg, h.voxel, h.tint);
             var e2 = 0.0;

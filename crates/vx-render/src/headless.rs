@@ -24,7 +24,8 @@ impl Headless {
         let info = adapter.get_info();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("voxelscape"),
-            required_features: wgpu::Features::empty(),
+            // Timestamps when available (per-pass GPU profiling in `vx bench`).
+            required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
             required_limits: Renderer::required_limits(&adapter),
             experimental_features: Default::default(),
             memory_hints: wgpu::MemoryHints::Performance,

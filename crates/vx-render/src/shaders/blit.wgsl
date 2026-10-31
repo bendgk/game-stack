@@ -1,4 +1,4 @@
-// Pass 4 — present: exposure, a soft bloom tap, AgX tonemap, sRGB encode (when the target
+// Pass 5 — present: exposure, a soft bloom tap, AgX tonemap, sRGB encode (when the target
 // isn't an *-srgb format), and a little dither against banding.
 
 struct Present {
@@ -80,26 +80,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (pp.mode > 0.5 && pp.mode < 1.5) { return vec4<f32>(in.uv, 0.5, 1.0); }
     var c = bicubic(in.uv);
     if (pp.mode > 1.5) { return vec4<f32>(c, 1.0); }
-    // Contrast-adaptive sharpening (on the source grid), less where contrast is already high.
-    let px = 1.0 / vec2<f32>(textureDimensions(src));
-    let n = textureSampleLevel(src, samp, in.uv + vec2<f32>(0.0, -px.y), 0.0).rgb;
-    let s = textureSampleLevel(src, samp, in.uv + vec2<f32>(0.0, px.y), 0.0).rgb;
-    let e = textureSampleLevel(src, samp, in.uv + vec2<f32>(px.x, 0.0), 0.0).rgb;
-    let w = textureSampleLevel(src, samp, in.uv + vec2<f32>(-px.x, 0.0), 0.0).rgb;
-    let mn = min(c, min(min(n, s), min(e, w)));
-    let mx = max(c, max(max(n, s), max(e, w)));
-    let amp = sqrt(clamp(min(mn, 1.0 - min(mx, vec3<f32>(1.0))) / max(mx, vec3<f32>(1e-4)), vec3<f32>(0.0), vec3<f32>(1.0)));
-    let wgt = -amp * 0.18;
-    c = max((c + (n + s + e + w) * wgt) / (1.0 + 4.0 * wgt), vec3<f32>(0.0));
-    // Bloom: wide taps, bright pixels only.
-    var b = vec3<f32>(0.0);
-    for (var i = 0; i < 12; i++) {
-        let a = f32(i) * 0.5236;
-        let r = (6.0 + f32(i % 3) * 7.0) * px;
-        let t = textureSampleLevel(src, samp, in.uv + vec2<f32>(cos(a), sin(a)) * r, 0.0).rgb;
-        b += max(t - vec3<f32>(4.0), vec3<f32>(0.0));
-    }
-    c += b / 12.0 * pp.bloom;
     c = pbr_neutral(c * pp.exposure);
     // Gentle vignette.
     let q = in.uv - 0.5;

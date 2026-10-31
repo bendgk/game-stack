@@ -329,6 +329,9 @@ struct Targets {
     mat: wgpu::TextureView,
     hdr: wgpu::TextureView,
     taa: [wgpu::TextureView; 2],
+    post: wgpu::TextureView,
+    /// Half-resolution sun visibility.
+    vis: wgpu::TextureView,
 }
 
 fn tex(device: &wgpu::Device, w: u32, h: u32, f: wgpu::TextureFormat, label: &str) -> wgpu::TextureView {
@@ -358,6 +361,8 @@ impl Targets {
             mat: tex(d, w, h, U32, "mat"),
             hdr: tex(d, w, h, F16X4, "hdr"),
             taa: two(F16X4, "taa"),
+            post: tex(d, w, h, F16X4, "post"),
+            vis: tex(d, w.div_ceil(2), h.div_ceil(2), wgpu::TextureFormat::R32Float, "sun visibility"),
         }
     }
 }
@@ -386,8 +391,10 @@ pub struct Renderer {
     insts: wgpu::Buffer,
     inst_count: u32,
     trace: Pass,
+    shadow: Pass,
     shade: Pass,
     taa: Pass,
+    post: Pass,
     blit: wgpu::RenderPipeline,
     blit_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -402,7 +409,17 @@ pub struct Renderer {
     pub info: WorldInfo,
     /// 0 normal, 1 test pattern, 2 untonemapped source.
     pub debug_view: u32,
+    timer: Option<Timer>,
 }
+
+/// GPU timestamps around each pass (profiling; needs `Features::TIMESTAMP_QUERY`).
+struct Timer {
+    set: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    read: wgpu::Buffer,
+}
+
+const PASS_NAMES: [&str; 7] = ["sky", "trace", "shadow", "shade", "taa", "post", "present"];
 
 impl Renderer {
     /// The device limits the renderer wants (big storage buffers for the DAG).
@@ -453,13 +470,21 @@ impl Renderer {
             "trace_main",
             &[B::Out(F32X4), B::Out(F16X4), B::Out(F16X4), B::Out(U32)],
         );
+        let shadow = compute_pass(
+            &device,
+            sl,
+            "shadow",
+            include_str!("shaders/shadow.wgsl"),
+            "shadow_main",
+            &[B::Tex, B::Tex, B::Out(wgpu::TextureFormat::R32Float)],
+        );
         let shade = compute_pass(
             &device,
             sl,
             "shade",
             include_str!("shaders/shade.wgsl"),
             "shade_main",
-            &[B::Tex, B::Tex, B::Tex, B::TexUint, B::Out(F16X4)],
+            &[B::Tex, B::Tex, B::Tex, B::TexUint, B::Out(F16X4), B::Tex],
         );
         let taa = compute_pass(
             &device,
@@ -470,6 +495,8 @@ impl Renderer {
             &[B::Tex, B::Tex, B::TexFilter, B::Sampler, B::Out(F16X4)],
         );
 
+        let post =
+            compute_pass(&device, sl, "post", include_str!("shaders/post.wgsl"), "post_main", &[B::Tex, B::Out(F16X4)]);
         let blit_layout = layout(&device, "blit", &[B::TexFilter, B::Sampler, B::Uniform]);
         let blit_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("blit"),
@@ -571,8 +598,10 @@ impl Renderer {
             insts,
             inst_count: 0,
             trace,
+            shadow,
             shade,
             taa,
+            post,
             blit,
             blit_layout,
             sampler,
@@ -585,6 +614,7 @@ impl Renderer {
             world: [0; 4],
             info: WorldInfo::default(),
             debug_view: 0,
+            timer: None,
         }
     }
 
@@ -706,7 +736,7 @@ impl Renderer {
             jitter: [jx, jy, self.frame as f32, env.exposure],
             world: [self.world[0], self.world[1], self.world[2], self.debug_view],
             params: [pixel_angle * env.lod, env.fog, env.gi_distance, env.night()],
-            tint: [env.tint.x, env.tint.y, env.tint.z, 0.0],
+            tint: [env.tint.x, env.tint.y, env.tint.z, env.bloom],
             extra: [self.inst_count, self.still, 0, 0],
         };
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
@@ -726,18 +756,24 @@ impl Renderer {
         let t = &self.targets;
         let d = &self.device;
         let g_trace = bind(d, &self.trace.layout, &[tv(&t.pos[i]), tv(&t.nrm[i]), tv(&t.alb), tv(&t.mat)]);
-        let g_shade = bind(d, &self.shade.layout, &[tv(&t.pos[i]), tv(&t.nrm[i]), tv(&t.alb), tv(&t.mat), tv(&t.hdr)]);
+        let g_shadow = bind(d, &self.shadow.layout, &[tv(&t.pos[i]), tv(&t.nrm[i]), tv(&t.vis)]);
+        let g_shade = bind(
+            d,
+            &self.shade.layout,
+            &[tv(&t.pos[i]), tv(&t.nrm[i]), tv(&t.alb), tv(&t.mat), tv(&t.hdr), tv(&t.vis)],
+        );
         let g_taa = bind(
             d,
             &self.taa.layout,
             &[tv(&t.pos[i]), tv(&t.hdr), tv(&t.taa[j]), wgpu::BindingResource::Sampler(&self.sampler), tv(&t.taa[i])],
         );
+        let g_post = bind(d, &self.post.layout, &[tv(&t.taa[i]), tv(&t.post)]);
         // Debug views 3+: show an intermediate buffer raw (3 hdr, 4 albedo, 5 normals).
         let src = match self.debug_view {
             3 => &t.hdr,
             4 | 99 => &t.alb,
             5 => &t.nrm[i],
-            _ => &t.taa[i],
+            _ => &t.post,
         };
         let g_blit = bind(
             d,
@@ -746,25 +782,46 @@ impl Renderer {
         );
 
         let mut enc = d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+        let (gx, gy) = (w.div_ceil(8), h.div_ceil(8));
+        let ts = |i: u32| {
+            self.timer.as_ref().map(|t| wgpu::ComputePassTimestampWrites {
+                query_set: &t.set,
+                beginning_of_pass_write_index: Some(2 * i),
+                end_of_pass_write_index: Some(2 * i + 1),
+            })
+        };
         {
-            let mut cp = enc
-                .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxelscape"), timestamp_writes: None });
-            let (gx, gy) = (w.div_ceil(8), h.div_ceil(8));
             // Sky LUT first (its own group 0: the LUT is a storage target here).
+            let mut cp =
+                enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("sky"), timestamp_writes: ts(0) });
             let g_sky = bind(d, &self.skylut.layout, &[tv(&self.sky_lut)]);
             cp.set_pipeline(&self.skylut.pipeline);
             cp.set_bind_group(0, &self.sky_scene, &[]);
             cp.set_bind_group(1, &g_sky, &[]);
             cp.dispatch_workgroups(16, 8, 1);
+        }
+        let passes: &[(&Pass, &wgpu::BindGroup)] = if self.debug_view == 99 {
+            &[(&self.trace, &g_trace)]
+        } else {
+            &[
+                (&self.trace, &g_trace),
+                (&self.shadow, &g_shadow),
+                (&self.shade, &g_shade),
+                (&self.taa, &g_taa),
+                (&self.post, &g_post),
+            ]
+        };
+        for (k, (pass, g)) in passes.iter().enumerate() {
+            let mut cp = enc
+                .begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: ts(k as u32 + 1) });
             cp.set_bind_group(0, &scene, &[]);
-            let passes: &[(&Pass, &wgpu::BindGroup)] = if self.debug_view == 99 {
-                &[(&self.trace, &g_trace)]
+            cp.set_pipeline(&pass.pipeline);
+            cp.set_bind_group(1, *g, &[]);
+            // The shadow pass runs at half resolution.
+            let half = std::ptr::eq(*pass, &self.shadow);
+            if half {
+                cp.dispatch_workgroups(w.div_ceil(2).div_ceil(8), h.div_ceil(2).div_ceil(8), 1);
             } else {
-                &[(&self.trace, &g_trace), (&self.shade, &g_shade), (&self.taa, &g_taa)]
-            };
-            for (pass, g) in passes {
-                cp.set_pipeline(&pass.pipeline);
-                cp.set_bind_group(1, *g, &[]);
                 cp.dispatch_workgroups(gx, gy, 1);
             }
         }
@@ -781,7 +838,11 @@ impl Renderer {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: self.timer.as_ref().map(|t| wgpu::RenderPassTimestampWrites {
+                    query_set: &t.set,
+                    beginning_of_pass_write_index: Some(12),
+                    end_of_pass_write_index: Some(13),
+                }),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -789,10 +850,58 @@ impl Renderer {
             rp.set_bind_group(0, &g_blit, &[]);
             rp.draw(0..3, 0..1);
         }
+        if let Some(t) = &self.timer {
+            enc.resolve_query_set(&t.set, 0..(PASS_NAMES.len() * 2) as u32, &t.resolve, 0);
+            enc.copy_buffer_to_buffer(&t.resolve, 0, &t.read, 0, t.resolve.size());
+        }
         self.queue.submit([enc.finish()]);
         self.prev_vp = vp;
         self.prev_pos = cam.pos;
         self.frame += 1;
+    }
+
+    /// Time every pass on the GPU from now on (if the device has `TIMESTAMP_QUERY`).
+    pub fn enable_profiling(&mut self) -> bool {
+        if !self.device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            return false;
+        }
+        let n = (PASS_NAMES.len() * 2) as u32;
+        let set = self.device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("timer"),
+            ty: wgpu::QueryType::Timestamp,
+            count: n,
+        });
+        let size = n as u64 * 8;
+        let resolve = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("timer resolve"),
+            size,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let read = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("timer read"),
+            size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        self.timer = Some(Timer { set, resolve, read });
+        true
+    }
+
+    /// Milliseconds per pass for the last frame (after the GPU finished it; blocks).
+    pub fn read_profile(&self) -> Vec<(&'static str, f64)> {
+        let Some(t) = &self.timer else { return vec![] };
+        let slice = t.read.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        let ticks: Vec<u64> = bytemuck::cast_slice(&slice.get_mapped_range().expect("mapped")).to_vec();
+        t.read.unmap();
+        let period = self.queue.get_timestamp_period() as f64 / 1e6;
+        PASS_NAMES
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (*n, ticks[2 * i + 1].saturating_sub(ticks[2 * i]) as f64 * period))
+            .collect()
     }
 
     /// Restart temporal history (after a teleport or a world swap).
