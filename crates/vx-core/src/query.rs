@@ -113,6 +113,30 @@ impl Collider {
         c
     }
 
+    /// Catch up with words appended to `dag` (an edit or appended prefabs) and follow its
+    /// current root. Flags of existing nodes never change (the pool is append-only).
+    pub fn update(&mut self, dag: &Dag) {
+        self.flags.resize(dag.words.len(), 0);
+        self.root = dag.root;
+        if dag.root != EMPTY {
+            self.compute(dag, dag.root, dag.levels);
+        }
+    }
+
+    /// Like [`Collider::blocked`], against another root of the same pool (an earlier version
+    /// of an edited world). The root must have been [`Collider::update`]d before.
+    pub fn blocked_at(&self, d: &Dag, root: NodeRef, min: IVec3, max: IVec3) -> bool {
+        if root == EMPTY || min.cmpge(max).any() || root as usize >= self.flags.len() {
+            return false;
+        }
+        let s = side(self.levels);
+        let (min, max) = (min.max(IVec3::ZERO), max.min(IVec3::splat(s)));
+        if min.cmpge(max).any() {
+            return false;
+        }
+        self.query(d, root, self.levels, IVec3::ZERO, min, max)
+    }
+
     fn blocking(&self, m: Mat) -> bool {
         self.blocks.get(m as usize).copied().unwrap_or(true)
     }
@@ -146,15 +170,7 @@ impl Collider {
 
     /// Any blocking voxel in the integer box `[min, max)`? Outside the world is empty.
     pub fn blocked(&self, d: &Dag, min: IVec3, max: IVec3) -> bool {
-        if self.root == EMPTY || min.cmpge(max).any() {
-            return false;
-        }
-        let s = side(self.levels);
-        let (min, max) = (min.max(IVec3::ZERO), max.min(IVec3::splat(s)));
-        if min.cmpge(max).any() {
-            return false;
-        }
-        self.query(d, self.root, self.levels, IVec3::ZERO, min, max)
+        self.blocked_at(d, self.root, min, max)
     }
 
     fn query(&self, d: &Dag, n: NodeRef, level: u32, origin: IVec3, min: IVec3, max: IVec3) -> bool {
@@ -237,6 +253,25 @@ mod tests {
     }
 
     #[test]
+    fn collider_follows_edits() {
+        let mut p = Palette::default();
+        let stone = p.add(Material::new("stone", 0x888888, 0.8));
+        let (mut dag, _) =
+            build(&p, 4, &[&BoxShape { b: Aabb::new(IVec3::ZERO, IVec3::new(256, 8, 256)), mat: stone }]);
+        let mut col = Collider::new(&dag, &p);
+        let r0 = dag.root;
+        let pillar = BoxShape { b: Aabb::new(IVec3::new(40, 8, 40), IVec3::new(44, 60, 44)), mat: stone };
+        let hole = BoxShape { b: Aabb::new(IVec3::new(0, 0, 0), IVec3::new(20, 8, 20)), mat: crate::CARVE };
+        crate::edit(&mut dag, &p, &[&pillar, &hole]);
+        col.update(&dag);
+        let probe = (IVec3::new(41, 30, 41), IVec3::new(42, 31, 42));
+        assert!(col.blocked(&dag, probe.0, probe.1), "new pillar blocks");
+        assert!(!col.blocked_at(&dag, r0, probe.0, probe.1), "the old version has no pillar");
+        assert!(!col.blocked(&dag, IVec3::new(5, 2, 5), IVec3::new(6, 3, 6)), "carved");
+        assert!(col.blocked_at(&dag, r0, IVec3::new(5, 2, 5), IVec3::new(6, 3, 6)));
+    }
+
+    #[test]
     fn append_and_bounds() {
         let mut p = Palette::default();
         let stone = p.add(Material::new("stone", 0x888888, 0.8));
@@ -270,5 +305,138 @@ mod raycast_down {
         // Shallow and diagonal rays from far away too.
         let d = dag.raycast(Vec3::new(3900.5, 4000.0, 3900.5), Vec3::new(-0.3, -1.0, -0.2), 1e6).expect("diagonal");
         assert!((4000.0 - d.t * Vec3::new(-0.3, -1.0, -0.2).normalize().y.abs() - 640.0).abs() < 1.5);
+    }
+}
+
+impl Dag {
+    /// Any non-air voxel in the box `[min, max)` (local to node `n` of `level`)?
+    pub fn any_in(&self, n: NodeRef, level: u32, min: IVec3, max: IVec3) -> bool {
+        let s = side(level);
+        let (min, max) = (min.max(IVec3::ZERO), max.min(IVec3::splat(s)));
+        if n == EMPTY || min.cmpge(max).any() {
+            return false;
+        }
+        any_rec(self, n, level, IVec3::ZERO, min, max)
+    }
+
+    /// This DAG turned `turns` × 90° about the vertical axis through its centre (looking down,
+    /// counter-clockwise: +x → −z). Exact: it permutes children, no resampling.
+    pub fn rotate_y(&self, palette: &Palette, turns: u8) -> Dag {
+        let turns = turns % 4;
+        if turns == 0 || self.root == EMPTY {
+            return self.clone();
+        }
+        let mut b = crate::DagBuilder::new(palette);
+        let mut memo = FxHashMap::default();
+        let root = rot_rec(self, &mut b, self.root, self.levels, turns, &mut memo);
+        b.finish(root, self.levels)
+    }
+}
+
+fn any_rec(d: &Dag, n: NodeRef, level: u32, origin: IVec3, min: IVec3, max: IVec3) -> bool {
+    let s = side(level);
+    let mask = d.mask(n);
+    // Whole node inside the box: any child at all.
+    if min.cmple(origin).all() && (origin + s).cmple(max).all() {
+        return mask != 0;
+    }
+    let cs = side(level - 1);
+    let a = ((min - origin) / cs).clamp(IVec3::ZERO, IVec3::splat(3));
+    let b = ((max - origin - 1) / cs).clamp(IVec3::ZERO, IVec3::splat(3));
+    for z in a.z..=b.z {
+        for y in a.y..=b.y {
+            for x in a.x..=b.x {
+                let i = (x | y << 2 | z << 4) as usize;
+                if mask >> i & 1 == 0 {
+                    continue;
+                }
+                if level == 1 {
+                    return true;
+                }
+                let o = origin + IVec3::new(x, y, z) * cs;
+                if any_rec(d, d.child(n, i), level - 1, o, min.max(o), max.min(o + cs)) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Where child (x, z) of a 4×4 grid goes after `turns` quarter turns (+x → −z).
+fn rot_xz(mut x: i32, mut z: i32, turns: u8) -> (i32, i32) {
+    for _ in 0..turns {
+        (x, z) = (z, 3 - x);
+    }
+    (x, z)
+}
+
+fn rot_rec(
+    d: &Dag,
+    b: &mut crate::DagBuilder,
+    n: NodeRef,
+    level: u32,
+    turns: u8,
+    memo: &mut FxHashMap<NodeRef, NodeRef>,
+) -> NodeRef {
+    if n == EMPTY {
+        return EMPTY;
+    }
+    if let Some(&r) = memo.get(&n) {
+        return r;
+    }
+    let out = if level == 1 {
+        let mut mats = [crate::AIR; 64];
+        for i in 0..64 {
+            let c = child_xyz(i);
+            let (x, z) = rot_xz(c.x, c.z, turns);
+            mats[(x | c.y << 2 | z << 4) as usize] = d.leaf_mat(n, i);
+        }
+        b.leaf(&mats)
+    } else {
+        let mut ch = [EMPTY; 64];
+        let mut bits = d.mask(n);
+        while bits != 0 {
+            let i = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let c = child_xyz(i);
+            let (x, z) = rot_xz(c.x, c.z, turns);
+            ch[(x | c.y << 2 | z << 4) as usize] = rot_rec(d, b, d.child(n, i), level - 1, turns, memo);
+        }
+        b.interior(&ch)
+    };
+    memo.insert(n, out);
+    out
+}
+
+#[cfg(test)]
+mod rotate {
+    use crate::{Aabb, BoxShape, IVec3, Material, Palette, build};
+
+    #[test]
+    fn quarter_turns_move_voxels_exactly() {
+        let mut p = Palette::default();
+        let a = p.add(Material::new("a", 0xff0000, 0.8));
+        let b = p.add(Material::new("b", 0x00ff00, 0.8));
+        let (d, _) = build(
+            &p,
+            3,
+            &[
+                &BoxShape { b: Aabb::new(IVec3::new(40, 0, 30), IVec3::new(50, 5, 34)), mat: a },
+                &BoxShape { b: Aabb::new(IVec3::new(1, 2, 3), IVec3::new(2, 3, 4)), mat: b },
+            ],
+        );
+        let r1 = d.rotate_y(&p, 1);
+        // +x → −z: (x, z) → (z, 63 − x).
+        assert_eq!(r1.get(IVec3::new(3, 2, 62)), b);
+        assert_eq!(r1.get(IVec3::new(31, 1, 63 - 45)), a);
+        assert_eq!(r1.voxel_count(), d.voxel_count());
+        let r4 = r1.rotate_y(&p, 3);
+        for (x, y, z) in [(1, 2, 3), (45, 1, 31), (10, 10, 10)] {
+            assert_eq!(r4.get(IVec3::new(x, y, z)), d.get(IVec3::new(x, y, z)));
+        }
+        assert!(d.any_in(d.root, 3, IVec3::new(0, 0, 0), IVec3::new(2, 3, 4)));
+        assert!(!d.any_in(d.root, 3, IVec3::new(0, 0, 0), IVec3::new(1, 3, 4)));
+        assert!(!d.any_in(d.root, 3, IVec3::new(50, 0, 0), IVec3::new(64, 64, 64)));
     }
 }

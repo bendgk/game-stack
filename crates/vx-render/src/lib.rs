@@ -417,6 +417,10 @@ pub struct Renderer {
     prev_sun: Vec3,
     prev_pos: Vec3,
     world: [u32; 4],
+    /// Words uploaded so far and the node buffer's capacity (words).
+    nodes_len: usize,
+    nodes_cap: usize,
+    palette: Palette,
     pub info: WorldInfo,
     /// 0 normal, 1 test pattern, 2 untonemapped source.
     pub debug_view: u32,
@@ -623,6 +627,9 @@ impl Renderer {
             prev_sun: Vec3::ZERO,
             prev_pos: Vec3::ZERO,
             world: [0; 4],
+            nodes_len: 0,
+            nodes_cap: 0,
+            palette: Palette::default(),
             info: WorldInfo::default(),
             debug_view: 0,
             timer: None,
@@ -659,15 +666,22 @@ impl Renderer {
     /// Upload a world (DAG node pool + palette). Errors if it exceeds the device's limits.
     pub fn set_world(&mut self, dag: &Dag, palette: &Palette) -> Result<(), String> {
         let bytes = (dag.words.len() * 4) as u64;
-        let lim = self.device.limits().max_storage_buffer_binding_size;
+        let lim = self.device.limits().max_storage_buffer_binding_size.min(self.device.limits().max_buffer_size);
         if bytes > lim {
             return Err(format!("world is {} MB but this GPU binds at most {} MB per buffer", bytes >> 20, lim >> 20));
         }
-        let nodes = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        // Room to grow: edits and models append to the pool, and only the tail is uploaded.
+        let cap = (bytes + (bytes / 4).max(16 << 20)).min(lim) & !3;
+        let nodes = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("dag nodes"),
-            contents: bytemuck::cast_slice(&dag.words),
-            usage: wgpu::BufferUsages::STORAGE,
+            size: cap,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
+        self.queue.write_buffer(&nodes, 0, bytemuck::cast_slice(&dag.words));
+        self.nodes_len = dag.words.len();
+        self.nodes_cap = (cap / 4) as usize;
+        self.palette = palette.clone();
         let mut gm = palette.gpu();
         if gm.is_empty() {
             gm.push(bytemuck::Zeroable::zeroed());
@@ -695,6 +709,44 @@ impl Renderer {
         self.info = WorldInfo { bytes, levels: dag.levels, side: dag.side() as u32 };
         self.frame = 0;
         Ok(())
+    }
+
+    /// Catch up with words appended to the world's pool since `set_world` (edits, models):
+    /// uploads only the new tail, or re-creates the buffer when it outgrows its headroom.
+    pub fn update_world(&mut self, dag: &Dag) -> Result<(), String> {
+        if self.nodes.is_none() {
+            let pal = self.palette.clone();
+            return self.set_world(dag, &pal);
+        }
+        if dag.words.len() < self.nodes_len {
+            let pal = self.palette.clone();
+            return self.set_world(dag, &pal);
+        }
+        if dag.words.len() > self.nodes_cap {
+            let (root, pal) = (self.world[0], self.palette.clone());
+            self.set_world(dag, &pal)?;
+            self.world[0] = root;
+            return Ok(());
+        }
+        if dag.words.len() > self.nodes_len
+            && let Some(nodes) = &self.nodes
+        {
+            let tail = &dag.words[self.nodes_len..];
+            self.queue.write_buffer(nodes, (self.nodes_len * 4) as u64, bytemuck::cast_slice(tail));
+            self.nodes_len = dag.words.len();
+            self.info.bytes = (self.nodes_len * 4) as u64;
+        }
+        Ok(())
+    }
+
+    /// Which root of the pool to draw (a version of an edited world). Lighting history is
+    /// kept: only the changed voxels re-converge.
+    pub fn set_root(&mut self, root: u32) {
+        self.world[0] = root;
+    }
+
+    pub fn root(&self) -> u32 {
+        self.world[0]
     }
 
     /// The prefabs to draw this frame (players, props). At most [`MAX_INSTANCES`].

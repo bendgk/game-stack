@@ -187,6 +187,11 @@ impl Dag {
     /// First solid voxel along a ray (voxel units). Returns (voxel, t, face normal).
     /// Hierarchical: empty space is skipped one empty node at a time.
     pub fn raycast(&self, origin: Vec3, dir: Vec3, max_t: f32) -> Option<RayHit> {
+        self.raycast_at(self.root, origin, dir, max_t)
+    }
+
+    /// [`Dag::raycast`] against another root of this pool (a version of an edited world).
+    pub fn raycast_at(&self, root: NodeRef, origin: Vec3, dir: Vec3, max_t: f32) -> Option<RayHit> {
         let world = self.side() as f32;
         let dir = dir.normalize_or_zero();
         if dir == Vec3::ZERO {
@@ -226,7 +231,7 @@ impl Dag {
                 return None;
             }
             // Descend until we hit a solid voxel or an empty node.
-            let mut n = self.root;
+            let mut n = root;
             let mut level = self.levels;
             let empty_size;
             loop {
@@ -353,6 +358,14 @@ impl DagBuilder {
             solid_cache: FxHashMap::default(),
             scratch: Vec::with_capacity(70),
         }
+    }
+
+    /// A builder that appends to an existing pool (see [`crate::compose::edit`]). New nodes
+    /// dedup among themselves; existing words are never rewritten.
+    pub fn over(words: Vec<u32>, palette: &Palette) -> Self {
+        let mut b = Self::new(palette);
+        b.words = if words.is_empty() { vec![0, 0, 0] } else { words };
+        b
     }
 
     pub fn unique_nodes(&self) -> usize {

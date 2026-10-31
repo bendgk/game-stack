@@ -16,7 +16,7 @@ pub mod dag;
 pub mod mat;
 pub mod query;
 
-pub use compose::{Aabb, BoxShape, CARVE, Class, Dense, FnShape, Instance, Shape, build, prefab};
+pub use compose::{Aabb, Ball, BoxShape, CARVE, Class, Dense, FnShape, Instance, Shape, build, edit, prefab};
 pub use dag::{Dag, DagBuilder, EMPTY, NodeRef, Pool, RayHit, side};
 pub use glam::{self, IVec3, Vec3};
 pub use mat::{AIR, GpuMaterial, Mat, Material, Palette, flag};

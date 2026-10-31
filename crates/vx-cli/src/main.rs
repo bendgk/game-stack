@@ -444,6 +444,117 @@ fn main() {
                 shot(&a, &w.dag, &w.palette, cam, &env_for(&w.spec));
             }
         }
+        "mc" => {
+            // vx mc --world DIR|ZIP [--assets JAR,PACK] [--radius N] [--center x,z] [--out FILE.vxw] [--shot PNG]
+            let files =
+                vx_mc::import::WorldFiles::open(std::path::Path::new(a.get("world").expect("--world"))).unwrap();
+            let assets = match a.get("assets") {
+                Some(list) => {
+                    let mut x = vx_mc::assets::Assets::none();
+                    for p in list.split(',') {
+                        x.add(std::path::Path::new(p)).unwrap();
+                    }
+                    x
+                }
+                None => vx_mc::default_assets(),
+            };
+            let opt = vx_mc::import::Options {
+                radius: a.get("radius").and_then(|v| v.parse().ok()).unwrap_or(384),
+                center: a.get("center").and_then(|v| {
+                    let p: Vec<i32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+                    (p.len() == 2).then(|| [p[0], p[1]])
+                }),
+                title: None,
+            };
+            let w = vx_mc::import::import(&files, &assets, &opt).unwrap();
+            let (bytes, meta) = vx_gen::bundle::bundle(&w.world);
+            println!(
+                "{}: {} chunks, {} block states, {} materials · {:.2e} voxels · {} MB bundle · {} ms · textures: {}",
+                meta.spec.title,
+                w.chunks,
+                w.states,
+                w.materials,
+                w.world.stats.voxels as f64,
+                bytes.len() >> 20,
+                w.ms,
+                assets.label
+            );
+            if let Some(out) = a.get("out") {
+                std::fs::write(out, &bytes).unwrap();
+                println!("wrote {out} ({})", meta.hash);
+            }
+            if a.contains_key("shot") {
+                let sp = w.world.spawn;
+                let cam = Camera { pos: sp + Vec3::new(-700.0, 520.0, 900.0), yaw: -0.65, pitch: -0.38, fov_y: 1.0 };
+                let mut b = a.clone();
+                b.insert("out".into(), a.get("shot").cloned().unwrap_or("mc.png".into()));
+                shot(&b, &w.world.dag, &w.world.palette, cam, &env_for(&w.world.spec));
+            }
+        }
+        "mc-gallery" => {
+            // Every listed block state voxelized with its textures, in a row on a floor.
+            let assets = match a.get("assets") {
+                Some(p) => {
+                    let mut x = vx_mc::assets::Assets::none();
+                    x.add(std::path::Path::new(p)).unwrap();
+                    x
+                }
+                None => vx_mc::default_assets(),
+            };
+            let names = a.get("blocks").cloned().unwrap_or_else(|| {
+                "grass_block,oak_log,oak_leaves,oak_stairs[facing=east],oak_slab,oak_fence[east=true;west=true],glass,glass_pane[east=true;west=true],torch,lantern,poppy,short_grass,oak_door[half=lower;facing=south],bookshelf,crafting_table,furnace,chest,ladder[facing=south],water,bricks,cobblestone_wall[up=true],flower_pot,cactus,pumpkin".into()
+            });
+            let mut pal = Palette::default();
+            pal.add(vx_core::Material::new("floor", 0x6c6f73, 0.9));
+            let mut items: Vec<Box<dyn vx_core::Shape>> = vec![Box::new(vx_core::BoxShape {
+                b: vx_core::Aabb::new(vx_core::IVec3::new(0, 0, 0), vx_core::IVec3::new(4096, 64, 4096)),
+                mat: 1,
+            })];
+            let mut ids = std::collections::HashMap::new();
+            for (i, spec) in names.split(',').enumerate() {
+                let (name, props) = spec.split_once('[').unwrap_or((spec, ""));
+                let props = props
+                    .trim_end_matches(']')
+                    .split(';')
+                    .filter_map(|kv| kv.split_once('='))
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect();
+                let st = vx_mc::anvil::State { name: format!("minecraft:{name}"), props };
+                if a.contains_key("verbose") {
+                    eprintln!("{name}: {} model(s)", assets.block(&st).len());
+                }
+                let Some(g) = vx_mc::voxelize::block(&assets, &st) else { continue };
+                let data: Vec<vx_core::Mat> = g
+                    .iter()
+                    .map(|v| match v {
+                        None => 0,
+                        Some(v) => *ids.entry((v.rgb, v.kind)).or_insert_with(|| {
+                            pal.add(
+                                vx_core::Material::new(
+                                    &format!("g{:?}{:?}", v.rgb, v.kind),
+                                    (v.rgb[0] as u32) << 16 | (v.rgb[1] as u32) << 8 | v.rgb[2] as u32,
+                                    0.85,
+                                )
+                                .grain(0.02),
+                            )
+                        }),
+                    })
+                    .collect();
+                let (col, row) = ((i % 8) as i32, (i / 8) as i32);
+                items.push(Box::new(vx_core::Dense {
+                    origin: vx_core::IVec3::new(1600 + col * 96, 64, 1700 + row * 96),
+                    size: vx_core::IVec3::splat(32),
+                    data: data.into(),
+                }));
+            }
+            let refs: Vec<&dyn vx_core::Shape> = items.iter().map(|b| b.as_ref()).collect();
+            let (dag, _) = vx_core::build(&pal, 6, &refs);
+            let spec = vx_gen::SceneSpec { time_of_day: 15.0, fog: 0.02, ..Default::default() };
+            let cam = Camera { pos: Vec3::new(1980.0, 300.0, 2280.0), yaw: 0.0, pitch: -0.55, fov_y: 0.9 };
+            let mut b = a.clone();
+            b.insert("out".into(), a.get("out").cloned().unwrap_or("gallery.png".into()));
+            shot(&b, &dag, &pal, cam, &env_for(&spec));
+        }
         "terrain" => terrain(&a),
         "wfc" => wfc_bench(&a),
         "bench" => bench(&a),

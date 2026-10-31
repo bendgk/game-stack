@@ -1,6 +1,6 @@
 # Voxels and procedural generation
 
-game-stack ships an optional voxel engine and a library of procedural generators, as five
+game-stack ships an optional voxel engine and a library of procedural generators, as six
 crates. Games don't have to use them. Pick what you need.
 
 | Crate | What it is |
@@ -9,6 +9,7 @@ crates. Games don't have to use them. Pick what you need.
 | `vx-render` | GPU ray tracer in WGSL (wgpu: Metal / Vulkan / DX12 native, WebGPU in the browser) |
 | `vx-terrain` | Noise primitives, heightmaps, hydraulic + thermal erosion (CPU and GPU), voxel terrain shapes |
 | `vx-gen` | Wave function collapse (CPU and GPU), cities, buildings, 41 procedural props, scene specs |
+| `vx-mc` | Minecraft Java worlds and resource packs → voxel worlds (32 voxels per block, real textures) |
 | `vx-cli` | The `vx` command: generate, benchmark and screenshot all of the above |
 
 One voxel is 1/32 m (3.125 cm). A world of `levels` spans `4^levels` voxels per side: level 8 is
@@ -119,6 +120,49 @@ for. A 1 km city renders in about 6 ms at 1600×900 on an M-series GPU, and abov
 DAGs are appended to the world's node pool with `Dag::append`, and rays are moved into each
 prefab's frame. `TINT` materials take a per-instance colour (player shirts).
 `vx_render::headless::Headless` renders to PNG without a window, as the CLI does.
+
+## Sculpting models (for people and agents)
+
+`vx_gen::sculpt` is a small modelling language in metres: `box`, `sphere`, `cylinder` (cones
+too), `line` (rods, legs, pipes), `torus`, `roof` (gable, with closed ends), `wedge`, `voxels`
+(pixel art layers) and `group` (move, turn, mirror, repeat). A spec is JSON, so an agent can
+write one, look at a render and revise it. `sculpt::guide()` is the full reference with scale
+rules (a player is 1.8 m, a door 1 × 2.1 m) and the craft that makes voxel builds look good.
+
+```json
+{ "name": "stool", "ops": [
+  { "op": "cylinder", "base": [0, 0.45, 0], "r": 0.2, "h": 0.05, "mat": "oak" },
+  { "op": "group", "mirror": ["x", "z"], "ops": [
+    { "op": "line", "a": [0.14, 0, 0.14], "b": [0.12, 0.45, 0.12], "r": 0.025, "mat": "dark_oak" } ] } ] }
+```
+
+`sculpt::build(&spec)` gives a prefab DAG (2 m up to 128 m). Materials come from
+`vx_gen::blocks`, a builder palette every world carries (`oak`, `brick`, `glass`, `lamp_warm`,
+`#rrggbb`…).
+
+## Editing worlds
+
+`vx_core::edit(&mut dag, &palette, &shapes)` paints shapes into an existing world **append-only**:
+only the changed paths are added after the old words, so every earlier root is still a valid
+world. That gives undo, rollback-safe multiplayer edits and cheap GPU updates
+(`Renderer::update_world` uploads only the new tail; `set_root` picks a version). Also:
+`Dag::rotate_y` (exact quarter turns), `Dag::any_in` (box occupancy), `raycast_at` and
+`Collider::blocked_at` for any version, `Ball` (integer sphere).
+
+## Minecraft worlds
+
+```sh
+pnpm vx mc --world "~/Library/Application Support/minecraft/saves/My World" --radius 256 --out my.vxw --shot my.png
+pnpm vx mc-gallery --out blocks.png     # voxelized blocks, to check a resource pack
+```
+
+`vx-mc` reads region files (1.16+ and the newest string palettes), resolves blockstates →
+models → textures from your own game jar or any resource pack, and voxelizes each block state
+once at 32³ (a 16 px texel becomes 2 × 2 voxels; transparent texels become air, so leaves and
+glass stay see-through; stairs, slabs, fences and plants keep their shapes). The world is built
+from those blocks with hash-consing, so a 512 × 512 block area (6 × 10¹¹ voxels) is ~27 MB and
+imports in about a second. The voxelizer takes any boxes-with-textures model, so it works for
+other games' block content too. Textures are never bundled: they come from the user's install.
 
 ## Worlds for games
 

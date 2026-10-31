@@ -16,6 +16,7 @@
 #![allow(clippy::needless_range_loop, clippy::type_complexity, clippy::too_many_arguments)]
 
 pub mod avatar;
+pub mod blocks;
 pub mod building;
 pub mod bundle;
 pub mod city;
@@ -24,6 +25,7 @@ pub mod land;
 pub mod prompt;
 pub mod props;
 pub mod rng;
+pub mod sculpt;
 pub mod spec;
 pub mod style;
 pub mod tiles;

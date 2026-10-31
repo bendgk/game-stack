@@ -63,6 +63,7 @@ pub fn bundle(world: &World) -> (Vec<u8>, Meta) {
     let mut palette = world.palette.clone();
     let mats = style::materials(&world.spec, &mut palette);
     avatar::materials(&mut palette);
+    crate::blocks::add_to(&mut palette);
     let mut dag = world.dag.clone();
     let mut prefabs = Vec::new();
     for (i, def) in props::CATALOG.iter().enumerate() {
@@ -110,13 +111,27 @@ pub fn encode(meta: &Meta, dag: &Dag) -> Vec<u8> {
     out
 }
 
+/// Just the metadata (cheap: no DAG parsing or hashing).
+pub fn read_meta(bytes: &[u8]) -> Result<Meta, String> {
+    if bytes.len() < 8 || &bytes[..4] != b"VXW1" {
+        return Err("not a voxelscape world bundle".into());
+    }
+    let n = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let json = bytes.get(8..8 + n).ok_or("truncated bundle")?;
+    let mut meta: Meta = serde_json::from_slice(json).map_err(|e| e.to_string())?;
+    // Worlds saved before the builder palette existed get it here (same order everywhere).
+    crate::blocks::add_to(&mut meta.palette);
+    Ok(meta)
+}
+
 pub fn decode(bytes: &[u8]) -> Result<(Meta, Dag), String> {
     if bytes.len() < 8 || &bytes[..4] != b"VXW1" {
         return Err("not a voxelscape world bundle".into());
     }
     let n = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
     let json = bytes.get(8..8 + n).ok_or("truncated bundle")?;
-    let meta: Meta = serde_json::from_slice(json).map_err(|e| e.to_string())?;
+    let mut meta: Meta = serde_json::from_slice(json).map_err(|e| e.to_string())?;
+    crate::blocks::add_to(&mut meta.palette);
     let dag = Dag::from_bytes(&bytes[8 + n..])?;
     if format!("{:016x}", fnv64(&dag.words)) != meta.hash {
         return Err("bundle hash mismatch".into());

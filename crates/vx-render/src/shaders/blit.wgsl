@@ -87,11 +87,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     c = mix(c * vec3<f32>(0.96, 0.99, 1.05), c, smoothstep(0.0, 0.35, l));
     c = mix(c, c * vec3<f32>(1.04, 1.0, 0.95), smoothstep(0.45, 1.0, l));
     let s_curve = c * c * (3.0 - 2.0 * c);
-    c = mix(c, clamp(s_curve, vec3<f32>(0.0), vec3<f32>(1.0)), 0.22);
+    c = mix(c, clamp(s_curve, vec3<f32>(0.0), vec3<f32>(1.0)), 0.16);
     let mx = max(c.r, max(c.g, c.b));
     let mn = min(c.r, min(c.g, c.b));
     let l2 = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-    c = max(mix(vec3<f32>(l2), c, 1.0 + 0.3 * (1.0 - (mx - mn))), vec3<f32>(0.0));
+    c = max(mix(vec3<f32>(l2), c, 1.0 + 0.12 * (1.0 - (mx - mn))), vec3<f32>(0.0));
     // Gentle vignette.
     let q = in.uv - 0.5;
     c *= 1.0 - dot(q, q) * 0.25;

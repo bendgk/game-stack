@@ -15,4 +15,5 @@ vx-core = { path = "../vx-core" }
 vx-gen = { path = "../vx-gen" }
 vx-render = { path = "../vx-render" }
 vx-terrain = { path = "../vx-terrain" }
+vx-mc = { path = "../vx-mc" }
 serde_json = { workspace = true }

@@ -91,6 +91,51 @@ impl Shape for BoxShape {
     }
 }
 
+/// A solid ball of voxels whose centres are within `r` of `c` (integer maths: the same on
+/// every machine, so edits made of balls replay bit-exactly).
+pub struct Ball {
+    pub c: IVec3,
+    pub r: i32,
+    pub mat: Mat,
+}
+
+impl Ball {
+    fn inside(&self, p: IVec3) -> bool {
+        // Doubled coordinates keep the voxel centre (p + ½) integral.
+        let d = (p * 2 + IVec3::ONE) - self.c * 2;
+        (d.x as i64).pow(2) + (d.y as i64).pow(2) + (d.z as i64).pow(2) <= 4 * (self.r as i64).pow(2)
+    }
+}
+
+impl Shape for Ball {
+    fn bounds(&self) -> Aabb {
+        Aabb::new(self.c - IVec3::splat(self.r), self.c + IVec3::splat(self.r + 1))
+    }
+    fn classify(&self, cube: Aabb) -> Class {
+        if !self.bounds().overlaps(&cube) {
+            return Class::Empty;
+        }
+        let (a, b) = (cube.min, cube.max - IVec3::ONE);
+        let all = (0..8).all(|i| {
+            self.inside(IVec3::new(
+                if i & 1 == 0 { a.x } else { b.x },
+                if i & 2 == 0 { a.y } else { b.y },
+                if i & 4 == 0 { a.z } else { b.z },
+            ))
+        });
+        if all { Class::Solid(if self.mat == AIR { CARVE } else { self.mat }) } else { Class::Mixed }
+    }
+    fn sample(&self, p: IVec3) -> Mat {
+        if !self.inside(p) {
+            AIR
+        } else if self.mat == AIR {
+            CARVE
+        } else {
+            self.mat
+        }
+    }
+}
+
 /// A box that carves (paints air) — boxes are painted in order, so a later `Carve`
 /// removes what earlier items placed. Represented with a sentinel material.
 pub const CARVE: Mat = u16::MAX;
@@ -151,18 +196,10 @@ impl Shape for Instance {
         if !b.overlaps(&cube) {
             return Class::Empty;
         }
-        // An aligned sub-cube that the prefab leaves empty.
-        let size = cube.max.x - cube.min.x;
+        // A sub-cube the prefab leaves empty (aligned or not): skip it without sampling.
         let rel = cube.min - self.origin;
-        if b.contains(&cube)
-            && size.count_ones() == 1
-            && size.trailing_zeros().is_multiple_of(2)
-            && rel % size == IVec3::ZERO
-        {
-            let level = size.trailing_zeros() / 2;
-            if level >= 1 && self.dag.descend(self.dag.root, self.dag.levels, rel, level) == EMPTY {
-                return Class::Empty;
-            }
+        if !self.dag.any_in(self.dag.root, self.dag.levels, rel, cube.max - self.origin) {
+            return Class::Empty;
         }
         Class::Mixed
     }
@@ -203,7 +240,10 @@ struct Ctx<'a> {
     _p: std::marker::PhantomData<&'a ()>,
 }
 
-fn build_node(cx: &mut Ctx, level: u32, origin: IVec3, items: &[&dyn Shape]) -> NodeRef {
+/// Build the node for cube `(origin, level)` from `items` painted over `base` (an existing node
+/// of the same pool covering that cube, or EMPTY). Untouched cubes keep their base node, so an
+/// edit only adds the paths it changes.
+fn build_node(cx: &mut Ctx, level: u32, origin: IVec3, items: &[&dyn Shape], base: NodeRef) -> NodeRef {
     let size = side(level);
     let cube = Aabb::cube(origin, size);
     // Walk from the top item down: drop items that are empty here; stop at a solid one.
@@ -222,7 +262,8 @@ fn build_node(cx: &mut Ctx, level: u32, origin: IVec3, items: &[&dyn Shape]) -> 
     live.reverse();
     if live.is_empty() {
         return match floor {
-            None | Some(CARVE) => EMPTY,
+            None => base,
+            Some(CARVE) => EMPTY,
             Some(m) => {
                 cx.stats.solid_shortcuts += 1;
                 cx.b.solid(m, level)
@@ -231,6 +272,7 @@ fn build_node(cx: &mut Ctx, level: u32, origin: IVec3, items: &[&dyn Shape]) -> 
     }
     // Link a prefab that is alone in an aligned cube.
     if floor.is_none()
+        && base == EMPTY
         && live.len() == 1
         && let Some((dag, n)) = live[0].as_instance(cube, level)
     {
@@ -252,7 +294,11 @@ fn build_node(cx: &mut Ctx, level: u32, origin: IVec3, items: &[&dyn Shape]) -> 
         let mut mats = [AIR; 64];
         for (i, m) in mats.iter_mut().enumerate() {
             let p = origin + crate::dag::child_xyz(i);
-            let mut v = floor.unwrap_or(AIR);
+            let mut v = match floor {
+                Some(f) => f,
+                None if base != EMPTY => cx.b.leaf_mat(base, i),
+                None => AIR,
+            };
             for it in live.iter().rev() {
                 let s = it.sample(p);
                 if s != AIR {
@@ -291,11 +337,14 @@ fn build_node(cx: &mut Ctx, level: u32, origin: IVec3, items: &[&dyn Shape]) -> 
     }
     let mut ch = [EMPTY; 64];
     for (i, bk) in buckets.iter().enumerate() {
-        if bk.is_empty() || (bk.len() == 1 && floor_ref.is_some()) && floor.is_none() {
+        // Below a solid floor the base is covered, so it only matters without one.
+        let below = if base != EMPTY && floor.is_none() { cx.b.child(base, i) } else { EMPTY };
+        if bk.is_empty() {
+            ch[i] = below;
             continue;
         }
         let o = origin + crate::dag::child_xyz(i) * cs;
-        ch[i] = build_node(cx, level - 1, o, bk);
+        ch[i] = build_node(cx, level - 1, o, bk, below);
     }
     cx.b.interior(&ch)
 }
@@ -335,7 +384,7 @@ pub fn build(palette: &Palette, levels: u32, items: &[&dyn Shape]) -> (Dag, Buil
                         stats: BuildStats::default(),
                         _p: Default::default(),
                     };
-                    let r = build_node(&mut cx, split, o, &mine);
+                    let r = build_node(&mut cx, split, o, &mine, EMPTY);
                     (o, if r == EMPTY { None } else { Some((cx.b, r, cx.stats)) })
                 })
                 .collect();
@@ -373,7 +422,7 @@ pub fn build(palette: &Palette, levels: u32, items: &[&dyn Shape]) -> (Dag, Buil
         stats: BuildStats::default(),
         _p: Default::default(),
     };
-    let root = build_node(&mut cx, levels, IVec3::ZERO, items);
+    let root = build_node(&mut cx, levels, IVec3::ZERO, items, EMPTY);
     let mut stats = cx.stats;
     stats.millis = t0.elapsed().as_millis();
     (cx.b.finish(root, levels), stats)
@@ -387,8 +436,27 @@ pub fn prefab(palette: &Palette, levels: u32, items: &[&dyn Shape]) -> Arc<Dag> 
         stats: BuildStats::default(),
         _p: Default::default(),
     };
-    let root = build_node(&mut cx, levels, IVec3::ZERO, items);
+    let root = build_node(&mut cx, levels, IVec3::ZERO, items, EMPTY);
     Arc::new(cx.b.finish(root, levels))
+}
+
+/// Paint `items` over `dag` in place and return the new root. *Append-only*: existing words
+/// are never changed, only the changed paths are added after them, so every earlier root
+/// stays a valid world (undo, rollback, and the GPU only has to upload the new tail).
+pub fn edit(dag: &mut Dag, palette: &Palette, items: &[&dyn Shape]) -> NodeRef {
+    let words = std::mem::take(&mut dag.words);
+    let mut cx = Ctx {
+        b: DagBuilder::over(words, palette),
+        imports: FxHashMap::default(),
+        stats: BuildStats::default(),
+        _p: Default::default(),
+    };
+    let world = Aabb::cube(IVec3::ZERO, dag.side());
+    let mine: Vec<&dyn Shape> = items.iter().copied().filter(|it| it.bounds().overlaps(&world)).collect();
+    let root = if mine.is_empty() { dag.root } else { build_node(&mut cx, dag.levels, IVec3::ZERO, &mine, dag.root) };
+    dag.words = cx.b.words;
+    dag.root = root;
+    root
 }
 
 #[cfg(test)]
@@ -448,6 +516,35 @@ mod tests {
         assert_eq!(d.get(IVec3::new(16 * 3 + 6, 16 * 7 + 6, 5)), AIR);
         assert_eq!(d.get(IVec3::new(16 * 3 + 1, 16 * 7 + 6, 5)), 4);
         assert!(d.bytes() < 4096, "4096 instances share one subtree: {} bytes", d.bytes());
+    }
+
+    #[test]
+    fn edits_append_and_keep_old_roots() {
+        let p = pal();
+        let ground = BoxShape { b: Aabb::new(IVec3::ZERO, IVec3::new(256, 10, 256)), mat: 1 };
+        let (mut d, _) = build(&p, 4, &[&ground]);
+        let (r0, len0) = (d.root, d.words.len());
+        let before = d.words.clone();
+        let hole = BoxShape { b: Aabb::new(IVec3::new(8, 0, 8), IVec3::new(10, 40, 10)), mat: CARVE };
+        let wall = BoxShape { b: Aabb::new(IVec3::new(100, 10, 3), IVec3::new(103, 30, 50)), mat: 3 };
+        let r1 = edit(&mut d, &p, &[&hole, &wall]);
+        assert_eq!(&d.words[..len0], &before[..], "old words untouched");
+        assert!(d.words.len() - len0 < 4000, "only the changed paths: {}", d.words.len() - len0);
+        assert_eq!(d.get(IVec3::new(9, 2, 9)), AIR, "carved");
+        assert_eq!(d.get(IVec3::new(101, 20, 10)), 3, "wall");
+        assert_eq!(d.get(IVec3::new(50, 5, 50)), 1, "ground kept");
+        // The old root still reads the old world.
+        assert_eq!(d.get_in(r0, 4, IVec3::new(9, 2, 9)), 1);
+        assert_eq!(d.get_in(r0, 4, IVec3::new(101, 20, 10)), AIR);
+        // Same as building everything at once.
+        let (all, _) = build(&p, 4, &[&ground, &hole, &wall]);
+        assert_eq!(d.voxel_count(), all.voxel_count());
+        assert_eq!(d.avg(r1), all.avg(all.root), "averages (LOD) match a full rebuild");
+        // A prefab stamped into the edited world.
+        let pre = prefab(&p, 2, &[&BoxShape { b: Aabb::new(IVec3::ZERO, IVec3::splat(16)), mat: 5 }]);
+        edit(&mut d, &p, &[&Instance { dag: pre, origin: IVec3::new(64, 16, 64) }]);
+        assert_eq!(d.get(IVec3::new(70, 20, 70)), 5);
+        assert_eq!(d.get(IVec3::new(9, 2, 9)), AIR, "earlier edit kept");
     }
 
     #[test]

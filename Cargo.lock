@@ -3551,6 +3551,7 @@ dependencies = [
  "serde_json",
  "vx-core",
  "vx-gen",
+ "vx-mc",
  "vx-render",
  "vx-terrain",
 ]
@@ -3578,6 +3579,19 @@ dependencies = [
  "vx-core",
  "vx-terrain",
  "wgpu",
+]
+
+[[package]]
+name = "vx-mc"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "png",
+ "rayon",
+ "serde",
+ "serde_json",
+ "vx-core",
+ "vx-gen",
 ]
 
 [[package]]
