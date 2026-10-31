@@ -209,12 +209,18 @@ impl Dag {
             normal[ax] = if dir[ax] > 0.0 { -1 } else { 1 };
         }
         let step = dir.signum().as_ivec3();
+        // After leaving a cell, the axis we crossed and a coordinate half a voxel past the
+        // boundary: a tiny bias along the ray would vanish in float precision far from the
+        // origin (the ray would stall on the boundary).
+        let mut crossed: Option<(usize, f32)> = None;
         for _ in 0..100_000 {
             if t > tmax {
                 return None;
             }
-            // Point slightly inside the current cell, biased along the ray.
-            let p = origin + dir * (t + 1e-4);
+            let mut p = origin + dir * (t + 1e-4);
+            if let Some((ax, c)) = crossed {
+                p[ax] = c;
+            }
             let v = p.floor().as_ivec3();
             if v.cmplt(IVec3::ZERO).any() || v.cmpge(IVec3::splat(self.side())).any() {
                 return None;
@@ -270,6 +276,7 @@ impl Dag {
             }
             normal = IVec3::ZERO;
             normal[ax] = -step[ax];
+            crossed = Some((ax, if dir[ax] > 0.0 { hi[ax] + 0.5 } else { lo[ax] - 0.5 }));
             t = tn.max(t);
         }
         None

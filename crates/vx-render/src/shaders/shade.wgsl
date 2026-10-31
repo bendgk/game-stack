@@ -101,7 +101,11 @@ fn record_path(p: vec3<f32>) {
     }
 }
 
+// Coverage and prefiltered colour (linear) of the node of `level` around q.
+var<private> near_avg: vec3<f32>;
+
 fn coverage_near(q: vec3<f32>, level: u32) -> f32 {
+    near_avg = vec3<f32>(0.0);
     let iq = vec3<i32>(floor(q));
     if (any(iq < vec3<i32>(0)) || any(iq >= vec3<i32>(i32(u.world.z)))) { return 0.0; }
     // Deepest recorded ancestor that also contains q.
@@ -118,10 +122,16 @@ fn coverage_near(q: vec3<f32>, level: u32) -> f32 {
         let c3 = (iq >> vec3<u32>(s)) & vec3<i32>(3);
         let ci = u32(c3.x | (c3.y << 2u) | (c3.z << 4u));
         if (!mask_bit(node, ci)) { return 0.0; }
-        if (l == 1u) { return 1.0; }
+        if (l == 1u) {
+            let a = nodes[node + 2u];
+            near_avg = pow(vec3<f32>(f32(a & 255u), f32((a >> 8u) & 255u), f32((a >> 16u) & 255u)) / 255.0, vec3<f32>(2.2));
+            return 1.0;
+        }
         let child = child_ptr(node, ci);
         if (l - 1u <= level) {
-            return f32(nodes[child + 2u] >> 24u) / 255.0;
+            let a = nodes[child + 2u];
+            near_avg = pow(vec3<f32>(f32(a & 255u), f32((a >> 8u) & 255u), f32((a >> 16u) & 255u)) / 255.0, vec3<f32>(2.2));
+            return f32(a >> 24u) / 255.0;
         }
         node = child;
         l -= 1u;
@@ -129,7 +139,12 @@ fn coverage_near(q: vec3<f32>, level: u32) -> f32 {
     return 0.0;
 }
 
+/// Colour bleeding gathered by the AO cones: occluders' prefiltered albedo, weighted by how much
+/// each cone step was blocked (one-bounce voxel cone-traced GI, lit by an estimate of the sun).
+var<private> bleed: vec3<f32>;
+
 fn cone_ao(p: vec3<f32>, n: vec3<f32>) -> f32 {
+    bleed = vec3<f32>(0.0);
     record_path(p + n * 1.5);
     let up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(n.y) > 0.9);
     let t = normalize(cross(up, n));
@@ -144,7 +159,9 @@ fn cone_ao(p: vec3<f32>, n: vec3<f32>) -> f32 {
             // Node size ≤ half the distance travelled, so it never reaches back into the surface.
             let level = u32(clamp(floor(log2(dist * 0.5) * 0.5), 0.0, 4.0));
             let q = p + n * 1.5 + dir * dist;
-            occ += (1.0 - occ) * coverage_near(q, level) * 0.85;
+            let cov = coverage_near(q, level);
+            bleed += near_avg * (1.0 - occ) * cov;
+            occ += (1.0 - occ) * cov * 0.85;
             dist *= 3.2;
         }
         vis += 1.0 - occ;
@@ -199,7 +216,10 @@ fn shade_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Sunlight bounced off nearby sunlit ground and walls: strongest for surfaces facing down
     // or sideways, a little for everything (keeps shadows from going cold blue).
     let bounce = sun * max(sd.y, 0.0) * vec3<f32>(0.11, 0.1, 0.085) * (0.3 + 0.7 * clamp(0.5 - n.y * 0.5, 0.0, 1.0));
-    let ambient = (sky_ambient(n) * 1.35 + bounce * 1.3 + moon_light()) * ao;
+    // Bounce light from nearby surfaces, tinted by their colour (sunlit fraction estimated from
+    // the sun's height).
+    let gi = bleed * 0.25 * sun * max(sd.y, 0.0) * 0.12;
+    let ambient = (sky_ambient(n) * 1.35 + bounce * 1.3 + moon_light()) * ao + gi;
 
     let f0 = mix(vec3<f32>(0.04), albedo, metal);
     let nv = max(dot(n, v), 0.0);

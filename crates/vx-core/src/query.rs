@@ -251,3 +251,24 @@ mod tests {
         assert_eq!(world.get_in(r, 3, IVec3::new(10, 5, 6)), stone);
     }
 }
+
+#[cfg(test)]
+mod raycast_down {
+    use crate::{Aabb, BoxShape, IVec3, Material, Palette, Vec3, build};
+
+    #[test]
+    fn straight_down_finds_the_ground() {
+        let mut p = Palette::default();
+        let stone = p.add(Material::new("stone", 0x888888, 0.8));
+        let floor = BoxShape { b: Aabb::new(IVec3::ZERO, IVec3::new(4096, 640, 4096)), mat: stone };
+        let (dag, _) = build(&p, 6, &[&floor]);
+        let side = dag.side() as f32;
+        assert_eq!(dag.get(IVec3::new(1000, 600, 2000)), stone, "floor exists");
+        let h = dag.raycast(Vec3::new(1000.5, side - 1.0, 2000.5), Vec3::new(0.0, -1.0, 0.0), side);
+        let h = h.expect("hit the floor");
+        assert!((side - 1.0 - h.t - 640.0).abs() < 1.0, "surface at 640, got {}", side - 1.0 - h.t);
+        // Shallow and diagonal rays from far away too.
+        let d = dag.raycast(Vec3::new(3900.5, 4000.0, 3900.5), Vec3::new(-0.3, -1.0, -0.2), 1e6).expect("diagonal");
+        assert!((4000.0 - d.t * Vec3::new(-0.3, -1.0, -0.2).normalize().y.abs() - 640.0).abs() < 1.5);
+    }
+}

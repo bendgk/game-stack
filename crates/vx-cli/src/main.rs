@@ -271,7 +271,7 @@ fn bench(a: &HashMap<String, String>) {
     let cam = cam_arg(a).unwrap_or(Camera { pos: sp + Vec3::new(0.0, 51.0, 0.0), yaw: 0.0, pitch: 0.0, fov_y: 1.15 });
     let spec = vx_gen::SceneSpec { time_of_day: get("hour", meta.spec.time_of_day), ..meta.spec.clone() };
     let (elev, az) = spec.sun();
-    let env = Env::from_sun(elev, az, spec.fog);
+    let env = Env { lod: get("lod", 1.0), ..Env::from_sun(elev, az, spec.fog) };
     if a.contains_key("trace-only") {
         hl.r.debug_view = 99;
     }
@@ -281,6 +281,21 @@ fn bench(a: &HashMap<String, String>) {
     hl.render(&cam, &env, 10, 0.0); // warm-up (pipelines, caches)
     let profiling = hl.r.enable_profiling();
     // Moving camera: no still-frame convergence shortcut, like walking.
+    if let Some(dir) = a.get("seq") {
+        // A walk: 24 consecutive frames at 5 m/s, saved for frame-by-frame inspection.
+        let _ = std::fs::create_dir_all(dir);
+        hl.r.reset_history();
+        for i in 0..48 {
+            let c =
+                Camera { pos: cam.pos + Vec3::new(0.0, 0.0, -2.7) * i as f32, yaw: cam.yaw + i as f32 * 0.004, ..cam };
+            hl.render(&c, &env, 1, i as f32 / 60.0);
+            if i >= 24 {
+                hl.save_png(&format!("{dir}/f{:02}.png", i - 24)).unwrap();
+            }
+        }
+        println!("wrote {dir}/f00..f23.png");
+        return;
+    }
     if let Some(out) = a.get("quality") {
         // Motion quality: walk 40 frames at 5 m/s (2.7 voxels/frame), keep the last frame; then
         // the same camera, still, at full output resolution, converged over 64 jittered frames
@@ -298,6 +313,11 @@ fn bench(a: &HashMap<String, String>) {
         hl.render(&c, &env, 64, 0.0);
         hl.save_png(&format!("{out}_truth.png")).unwrap();
         let (_, _, truth) = hl.read();
+        if let Some(d) = a.get("debug").and_then(|v| v.parse::<u32>().ok()) {
+            hl.r.debug_view = d;
+            hl.render(&c, &env, 2, 0.0);
+            hl.save_png(&format!("{out}_debug{d}.png")).unwrap();
+        }
         let err: f64 =
             moving.iter().zip(&truth).map(|(a, b)| (*a as f64 - *b as f64).abs()).sum::<f64>() / moving.len() as f64;
         let edge: f64 = moving

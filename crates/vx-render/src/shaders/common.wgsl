@@ -17,7 +17,7 @@ struct Uniforms {
     world: vec4<u32>,         // x = root offset, y = root level, z = side (voxels), w = flags
     params: vec4<f32>,        // x = lod bias (radians/px), y = fog density, z = gi distance, w = night amount
     tint: vec4<f32>,          // atmosphere tint rgb, w = cloud cover
-    extra: vec4<u32>,         // x = instance count, y = still frames
+    extra: vec4<u32>,         // x = instance count, y = still frames, z = cloud cover (f32 bits)
     out_res: vec4<f32>,       // output width, height, 1/width, 1/height (TAA up-samples to it)
 };
 
@@ -141,6 +141,55 @@ fn horizon_ground(d: vec3<f32>) -> vec3<f32> {
     return mix(g, hz, exp(d.y * 12.0));
 }
 
+// Hash-based value noise (2D) for clouds.
+fn hn2(q: vec2<f32>) -> f32 {
+    return f32(pcg(bitcast<u32>(i32(q.x)) * 73856093u ^ bitcast<u32>(i32(q.y)) * 19349663u) & 0xffffu) / 65535.0;
+}
+fn noise2(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = p - i;
+    let w = f * f * (3.0 - 2.0 * f);
+    let a = hn2(i);
+    let b = hn2(i + vec2<f32>(1.0, 0.0));
+    let cc = hn2(i + vec2<f32>(0.0, 1.0));
+    let dd = hn2(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, w.x), mix(cc, dd, w.x), w.y);
+}
+fn fbm_clouds(p: vec2<f32>) -> f32 {
+    var s = 0.0;
+    var a = 0.5;
+    var q = p;
+    for (var i = 0; i < 5; i++) {
+        s += noise2(q) * a;
+        q = q * 2.03 + vec2<f32>(17.1, 9.7);
+        a *= 0.5;
+    }
+    return s;
+}
+
+/// A drifting layer of cumulus at ~1.6 km: lit from the sun with a silver lining, darker bases,
+/// fading toward the horizon. Returns (colour, coverage).
+fn clouds(d: vec3<f32>) -> vec4<f32> {
+    if (d.y < 0.02) { return vec4<f32>(0.0); }
+    let cover = clamp(bitcast<f32>(u.extra.z), 0.0, 1.0);
+    let t = 1600.0 / d.y;                     // metres to the cloud plane
+    let p = d.xz * t / 900.0 + vec2<f32>(u.cam_pos.w * 0.004, u.cam_pos.w * 0.0015);
+    let n = fbm_clouds(p);
+    let dens = smoothstep(0.62 - cover * 0.25, 0.85 - cover * 0.2, n);
+    if (dens <= 0.0) { return vec4<f32>(0.0); }
+    let sd = normalize(u.sun_dir.xyz);
+    // Self-shadowing: sample the density a little toward the sun.
+    let ps = p + sd.xz * 0.08;
+    let shade = smoothstep(0.55, 0.9, fbm_clouds(ps));
+    let sun = sun_color();
+    let mu = max(dot(d, sd), 0.0);
+    let silver = pow(mu, 8.0) * 2.0 * (1.0 - dens);
+    let ambient = sky(vec3<f32>(0.0, 1.0, 0.0), 0) * 0.9 + moon_light() * 2.0;
+    let lit = sun * (0.09 * (1.0 - shade * 0.7) + silver * 0.12) + ambient;
+    let fade = smoothstep(0.02, 0.18, d.y);
+    return vec4<f32>(lit, dens * fade);
+}
+
 fn sky_with_sun(d_in: vec3<f32>) -> vec3<f32> {
     let d = normalize(d_in);
     if (d.y < 0.0) { return horizon_ground(d); }
@@ -149,6 +198,8 @@ fn sky_with_sun(d_in: vec3<f32>) -> vec3<f32> {
     let cs = dot(d, sd);
     let disk = smoothstep(0.99995, 0.999975, cs);
     c += sun_color() * disk * 20.0;
+    let cl = clouds(d);
+    c = mix(c, cl.rgb, cl.a);
     if (u.params.w > 0.01 && d.y > 0.0) {
         let q = vec3<i32>(floor(d * 600.0));
         let hsh = hash3(q);
@@ -287,6 +338,8 @@ fn trace_dag(root: u32, root_level: u32, iside: u32, ro: vec3<f32>, rd: vec3<f32
                 h.n = entry_normal(ro, rd, t, vec3<f32>(ip), 1.0);
                 h.voxel = ip;
                 h.mat = leaf_mat(node, ci);
+                // The 4³ node's prefiltered colour: the voxel's "mip" for albedo filtering.
+                h.avg = nodes[node + 2u];
                 return h;
             }
             let child = child_ptr(node, ci);
@@ -383,8 +436,23 @@ fn coverage(p: vec3<f32>, level: u32) -> f32 {
 fn sun_shadow(p: vec3<f32>, lod_k: f32) -> f32 {
     let sd = normalize(u.sun_dir.xyz);
     if (sd.y <= -0.02) { return 0.0; }
+    // Long-range occluders (mountains, towers): a ray.
     let h = trace(p, sd, 1e6, lod_k, 0.5, 72u);
-    return select(1.0, 0.0, h.hit);
+    if (h.hit && h.t > 384.0) { return 0.0; }
+    // Near occluders: a cone toward the sun through the coverage pyramid. The cone widens with
+    // distance, so shadows are crisp where things touch and soften away from them (contact
+    // hardening), with no noise.
+    var vis = 1.0;
+    var dist = 2.0;
+    for (var k = 0; k < 9; k++) {
+        let width = max(dist * 0.045, 1.0);
+        let level = u32(clamp(floor(log2(width) * 0.5), 0.0, 4.0));
+        vis *= 1.0 - coverage(p + sd * dist, level) * 0.9;
+        if (vis < 0.02) { return 0.0; }
+        dist *= 1.9;
+    }
+    // If the ray hit something nearby that the cone's coarse steps missed, trust the ray.
+    return select(vis, min(vis, 0.15), h.hit);
 }
 
 /// A smooth surface normal from the coverage gradient around `p` at `level` (like the gradient
@@ -408,7 +476,14 @@ fn smooth_normal(p: vec3<f32>, level: u32, fallback: vec3<f32>) -> vec3<f32> {
 /// sub-pixel colour noise can't be resolved, it only aliases into shimmering grain.
 fn hit_albedo_at(mat: u32, avg: u32, voxel: vec3<i32>, tint: u32, t: f32) -> vec3<f32> {
     let footprint = t * u.params.x; // voxels per pixel at this distance
-    return hit_albedo_grain(mat, avg, voxel, tint, clamp(1.5 - footprint, 0.0, 1.0));
+    let fine = hit_albedo_grain(mat, avg, voxel, tint, clamp(1.5 - footprint, 0.0, 1.0));
+    if (mat == MAT_LOD || tint != NO_TINT) { return fine; }
+    // Mipmapping for voxels: once a pixel spans more than about one voxel, fade toward the 4³
+    // node's prefiltered colour, so 1-voxel details (tile grout, window frames, road paint)
+    // average out instead of crawling and flickering as you move.
+    let c = vec3<f32>(f32(avg & 255u), f32((avg >> 8u) & 255u), f32((avg >> 16u) & 255u)) / 255.0;
+    let mip = pow(c, vec3<f32>(2.2));
+    return mix(fine, mip, clamp((footprint - 0.8) / 2.4, 0.0, 1.0));
 }
 
 fn hit_albedo(mat: u32, avg: u32, voxel: vec3<i32>, tint: u32) -> vec3<f32> {

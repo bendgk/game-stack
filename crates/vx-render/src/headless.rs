@@ -104,6 +104,19 @@ impl Headless {
         (w, h, out)
     }
 
+    /// The last frame as PNG bytes.
+    pub fn png_bytes(&self) -> Result<Vec<u8>, String> {
+        let (w, h, px) = self.read();
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.write_header().map_err(|e| e.to_string())?.write_image_data(&px).map_err(|e| e.to_string())?;
+        }
+        Ok(out)
+    }
+
     pub fn save_png(&self, path: &str) -> Result<(), String> {
         let (w, h, px) = self.read();
         let f = std::fs::File::create(path).map_err(|e| e.to_string())?;

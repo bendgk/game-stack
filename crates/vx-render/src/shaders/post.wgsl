@@ -39,5 +39,24 @@ fn post_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         b += max(t - vec3<f32>(4.0), vec3<f32>(0.0));
     }
     col += b / 12.0 * u.tint.w;
+    // Crepuscular rays (god rays): march toward the sun on screen and gather how much bright
+    // sky lies between this pixel and the sun; occluders cut the shafts.
+    let sd = normalize(u.sun_dir.xyz);
+    let sc = u.view_proj * vec4<f32>(u.cam_pos.xyz + sd * 1e5, 1.0);
+    if (sc.w > 0.0 && sd.y > -0.05) {
+        let suv = vec2<f32>(sc.x / sc.w * 0.5 + 0.5, 0.5 - sc.y / sc.w * 0.5);
+        let uv = (vec2<f32>(gid.xy) + 0.5) * u.out_res.zw;
+        let to_sun = suv - uv;
+        var acc = 0.0;
+        let n = 16;
+        for (var i = 1; i <= n; i++) {
+            let q = uv + to_sun * (f32(i) / f32(n)) * 0.9;
+            if (any(q < vec2<f32>(0.0)) || any(q > vec2<f32>(1.0))) { continue; }
+            let v = ld(vec2<i32>(q * u.out_res.xy));
+            acc += smoothstep(0.6, 3.0, luminance(v));
+        }
+        let fall = exp(-length(to_sun * vec2<f32>(u.out_res.x / u.out_res.y, 1.0)) * 2.2);
+        col += sun_color() * (acc / f32(n)) * fall * 0.02;
+    }
     textureStore(o_post, c, vec4<f32>(finite3(col), 1.0));
 }

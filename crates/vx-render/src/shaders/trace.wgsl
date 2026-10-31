@@ -55,11 +55,13 @@ fn trace_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Distant hits (a pixel spans more than ~2 voxels): blend toward the smooth
     // coverage-gradient normal.
     let footprint = h.t * lod_k;
-    if (footprint > 2.0 && h.tint == NO_TINT) {
-        // One level coarser than the pixel footprint: smooth over terrain steps, not along them.
-        let level = u32(clamp(floor(log2(footprint) * 0.5) + 1.0, 1.0, 6.0));
+    if (footprint > 1.0 && h.tint == NO_TINT) {
+        // Normals from the coverage gradient over a region several pixels wide: from afar a
+        // terrain's half-metre steps (or any sub-pixel relief) should shade as the slope they
+        // form, not as a staircase of lit and unlit faces.
+        let level = u32(clamp(floor(log2(footprint * 16.0) * 0.5), 1.0, 6.0));
         let sn = smooth_normal(pos - h.n * 0.5, level, n);
-        n = normalize(mix(n, sn, clamp((footprint - 2.0) / 6.0, 0.0, 1.0)));
+        n = normalize(mix(n, sn, clamp((footprint - 1.0) / 3.0, 0.0, 1.0)));
     }
     textureStore(o_pos, c, vec4<f32>(pos, h.t));
     textureStore(o_nrm, c, vec4<f32>(n, emis));

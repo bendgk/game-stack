@@ -87,6 +87,8 @@ pub struct Env {
     pub gi_distance: f32,
     pub tint: Vec3,
     pub bloom: f32,
+    /// Cloud cover 0..1.
+    pub clouds: f32,
 }
 
 impl Default for Env {
@@ -102,6 +104,7 @@ impl Default for Env {
             gi_distance: 2048.0,
             tint: Vec3::ONE,
             bloom: 0.25,
+            clouds: 0.45,
         }
     }
 }
@@ -114,7 +117,7 @@ impl Env {
         let mut env = Env {
             sun_elevation: elevation,
             sun_azimuth: azimuth,
-            fog: 0.0003 + haze.clamp(0.0, 1.0) * 0.0025,
+            fog: 0.0009 + haze.clamp(0.0, 1.0) * 0.0025,
             ..Default::default()
         };
         // Exposure from the light actually arriving (sun through the atmosphere + sky), so
@@ -758,7 +761,7 @@ impl Renderer {
             world: [self.world[0], self.world[1], self.world[2], self.debug_view],
             params: [pixel_angle * env.lod, env.fog, env.gi_distance, env.night()],
             tint: [env.tint.x, env.tint.y, env.tint.z, env.bloom],
-            extra: [self.inst_count, self.still, 0, 0],
+            extra: [self.inst_count, self.still, env.clouds.to_bits(), 0],
             out_res: [ow as f32, oh as f32, 1.0 / ow as f32, 1.0 / oh as f32],
         };
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
