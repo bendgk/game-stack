@@ -109,6 +109,15 @@ pub fn materials() -> Vec<Material> {
             }
         }
     }
+    // A finer 8-level cube for exact-ish `#rrggbb` (appended after, so earlier ids never move).
+    let fine = [0x00, 0x24, 0x49, 0x6d, 0x92, 0xb6, 0xdb, 0xff];
+    for r in 0..8 {
+        for g in 0..8 {
+            for b in 0..8 {
+                v.push(m(&format!("d{r}{g}{b}"), fine[r] << 16 | fine[g] << 8 | fine[b], 0.7).grain(0.04));
+            }
+        }
+    }
     v
 }
 
@@ -144,7 +153,8 @@ pub fn resolve(pal: &Palette, name: &str) -> Option<Mat> {
             // Only plain, opaque, unlit materials stand in for a colour.
             let plain = mat.flags & (flag::GLASS | flag::EMITTER | flag::TINT | flag::FOLIAGE) == 0
                 && mat.metalness < 0.5
-                && (mat.name.starts_with('c') && mat.name.len() == 4 || mat.name.starts_with("paint_"));
+                && ((mat.name.starts_with('c') || mat.name.starts_with('d')) && mat.name.len() == 4
+                    || mat.name.starts_with("paint_"));
             if !plain {
                 continue;
             }
@@ -161,7 +171,11 @@ pub fn resolve(pal: &Palette, name: &str) -> Option<Mat> {
 
 /// Builder material names, for agents and the UI.
 pub fn names() -> Vec<String> {
-    materials().into_iter().map(|m| m.name).filter(|n| !(n.len() == 4 && n.starts_with('c'))).collect()
+    materials()
+        .into_iter()
+        .map(|m| m.name)
+        .filter(|n| !(n.len() == 4 && (n.starts_with('c') || n.starts_with('d'))))
+        .collect()
 }
 
 #[cfg(test)]
