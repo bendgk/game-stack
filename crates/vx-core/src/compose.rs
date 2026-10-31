@@ -115,6 +115,12 @@ impl Shape for Ball {
         if !self.bounds().overlaps(&cube) {
             return Class::Empty;
         }
+        // Nearest voxel centre of the cube to the centre: none inside → the cube is empty.
+        // (Without this every cube in the bounding box would be sampled voxel by voxel.)
+        let near = self.c.clamp(cube.min, cube.max - IVec3::ONE);
+        if !self.inside(near) {
+            return Class::Empty;
+        }
         let (a, b) = (cube.min, cube.max - IVec3::ONE);
         let all = (0..8).all(|i| {
             self.inside(IVec3::new(

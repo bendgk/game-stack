@@ -130,16 +130,74 @@ pub fn kind_of(s: &State) -> Kind {
     Kind::Solid
 }
 
-/// Biome-ish tints for grey textures (grass, leaves, water).
-fn tint(name: &str) -> [u8; 3] {
+/// Biome colours for grey textures: (grass, foliage, water).
+pub type Tint = ([u8; 3], [u8; 3], [u8; 3]);
+
+pub const PLAINS: Tint = ([145, 189, 89], [119, 171, 47], [63, 118, 228]);
+
+/// The tint of a biome (by name, without `minecraft:`). Close to the game's colour maps.
+pub fn biome_tint(biome: &str) -> Tint {
+    let b = biome.strip_prefix("minecraft:").unwrap_or(biome);
+    let has = |k: &str| b.contains(k);
+    if has("swamp") {
+        ([106, 112, 57], [106, 112, 57], [97, 123, 100])
+    } else if has("jungle") {
+        ([89, 201, 60], [48, 187, 11], [20, 160, 200])
+    } else if has("badlands") {
+        ([144, 129, 77], [158, 129, 77], [63, 118, 228])
+    } else if has("desert") || has("savanna") {
+        ([191, 183, 85], [174, 164, 42], [50, 160, 200])
+    } else if has("dark_forest") {
+        ([80, 122, 50], [89, 174, 48], [63, 118, 228])
+    } else if has("birch") {
+        ([136, 187, 103], [107, 169, 65], [63, 118, 228])
+    } else if has("taiga") || has("grove") || has("snowy") || has("frozen") || has("ice") {
+        ([128, 180, 151], [96, 161, 123], [61, 87, 214])
+    } else if has("cherry") {
+        ([182, 219, 97], [182, 219, 97], [93, 183, 239])
+    } else if has("mangrove") {
+        ([106, 112, 57], [141, 177, 39], [58, 122, 106])
+    } else if has("warm_ocean") {
+        ([142, 185, 113], [113, 167, 77], [67, 213, 238])
+    } else if has("cold_ocean") || has("deep") {
+        ([142, 185, 113], [113, 167, 77], [61, 87, 214])
+    } else if has("forest") || has("flower") {
+        ([121, 192, 90], [89, 174, 48], [63, 118, 228])
+    } else if has("mountain") || has("peak") || has("windswept") || has("stony") {
+        ([138, 182, 137], [109, 163, 107], [63, 118, 228])
+    } else {
+        PLAINS
+    }
+}
+
+/// The colour a block's grey texture is multiplied by, in a biome.
+fn tint(name: &str, t: Tint) -> [u8; 3] {
     match name {
-        n if n.contains("water") => [63, 118, 228],
+        n if n.contains("water") || n == "bubble_column" => t.2,
         "birch_leaves" => [128, 167, 85],
         "spruce_leaves" => [97, 153, 97],
-        n if n.ends_with("leaves") || n.contains("vine") => [119, 171, 47],
+        n if n.ends_with("leaves") || n.contains("vine") => t.1,
         "lily_pad" => [32, 128, 48],
-        _ => [145, 189, 89],
+        _ => t.0,
     }
+}
+
+/// Does this block take the biome's colour?
+pub fn tinted(s: &State) -> bool {
+    let n = s.short();
+    (n.ends_with("leaves") && !matches!(n, "birch_leaves" | "spruce_leaves" | "cherry_leaves" | "azalea_leaves"))
+        || matches!(
+            n,
+            "grass_block"
+                | "short_grass"
+                | "tall_grass"
+                | "fern"
+                | "large_fern"
+                | "vine"
+                | "sugar_cane"
+                | "water"
+                | "bubble_column"
+        )
 }
 
 /// Turn `turns` quarter turns of (a, b) about the centre of a 16 × 16 square.
@@ -282,6 +340,11 @@ fn fallback_colour(n: &str) -> [u8; 3] {
 
 /// Voxelize one block state. `None` = all air.
 pub fn block(assets: &Assets, s: &State) -> Option<Grid> {
+    block_in(assets, s, PLAINS)
+}
+
+/// Voxelize one block state with a biome tint. `None` = all air.
+pub fn block_in(assets: &Assets, s: &State, t: Tint) -> Option<Grid> {
     if s.is_air() {
         return None;
     }
@@ -310,12 +373,12 @@ pub fn block(assets: &Assets, s: &State) -> Option<Grid> {
                         continue;
                     }
                     let rgb = match &tex {
-                        Some(t) => {
-                            let c = t.at(x as f32 / 2.0, z as f32 / 2.0);
+                        Some(tx) => {
+                            let c = tx.at(x as f32 / 2.0, z as f32 / 2.0);
                             if name == "lava" {
                                 [c[0], c[1], c[2]]
                             } else {
-                                let tw = tint(name);
+                                let tw = tint(name, t);
                                 [
                                     (c[0] as u32 * tw[0] as u32 / 255) as u8,
                                     (c[1] as u32 * tw[1] as u32 / 255) as u8,
@@ -338,7 +401,7 @@ pub fn block(assets: &Assets, s: &State) -> Option<Grid> {
         }
         return Some(g);
     }
-    let tint_rgb = tint(name);
+    let tint_rgb = tint(name, t);
     let mut any = false;
     for y in 0..N {
         for z in 0..N {

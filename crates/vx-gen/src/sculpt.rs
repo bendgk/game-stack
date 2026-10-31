@@ -360,12 +360,52 @@ struct Placed<'a> {
     half: f32,
 }
 
+impl Kind {
+    /// Certainly no point within `r` of `q` (local metres) is inside: a conservative
+    /// distance bound, so big shapes don't get every cube of their bounding box sampled.
+    fn far(&self, q: Vec3, r: f32) -> bool {
+        match self {
+            Kind::Box { lo, hi } | Kind::Roof { lo, hi, .. } | Kind::Wedge { lo, hi, .. } => {
+                (q - q.clamp(*lo, *hi)).length() > r
+            }
+            Kind::Ellipsoid { c, r: rad } => (q - *c).length() > rad.max_element() + r,
+            Kind::Cone { base, axis, r0, r1, h } => {
+                let d = q - *base;
+                let along = d[*axis];
+                let mut rad = d;
+                rad[*axis] = 0.0;
+                along < h.min(0.0) - r || along > h.max(0.0) + r || rad.length() > r0.max(*r1) + r
+            }
+            Kind::Capsule { a, b, r: cr } => {
+                let ab = *b - *a;
+                let t = ((q - *a).dot(ab) / ab.length_squared().max(1e-9)).clamp(0.0, 1.0);
+                (q - (*a + ab * t)).length() > cr + r
+            }
+            Kind::Torus { c, axis, big, small } => {
+                let d = q - *c;
+                let along = d[*axis];
+                let mut rad = d;
+                rad[*axis] = 0.0;
+                ((rad.length() - big).powi(2) + along * along).sqrt() > small + r
+            }
+            Kind::Grid { .. } => false,
+        }
+    }
+}
+
 impl Shape for Placed<'_> {
     fn bounds(&self) -> Aabb {
         self.p.vb
     }
     fn classify(&self, cube: Aabb) -> Class {
         if !self.p.vb.overlaps(&cube) {
+            return Class::Empty;
+        }
+        // Far from the shape (in its local space; transforms here are rotations, mirrors and
+        // moves, so distances are kept): nothing to paint.
+        let centre = (cube.min + cube.max).as_vec3() * 0.5;
+        let reach = (cube.max - cube.min).as_vec3().length() * 0.5 / VPM;
+        if self.p.kind.far(self.p.local(centre, self.half), reach) {
             return Class::Empty;
         }
         if self.p.convex {

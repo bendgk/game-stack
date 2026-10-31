@@ -35,6 +35,9 @@ pub struct Section {
     pub palette: Vec<State>,
     /// Empty = every block is `palette[0]`.
     pub idx: Vec<u16>,
+    /// Biomes (names) and 64 indices for the 4×4×4 cells (`y*16 + z*4 + x`, empty = all [0]).
+    pub biomes: Vec<String>,
+    pub biome_idx: Vec<u8>,
 }
 
 impl Section {
@@ -51,14 +54,18 @@ pub struct Chunk {
 }
 
 fn unpack(data: &[i64], bits: usize) -> Vec<u16> {
+    unpack_n(data, bits, 4096)
+}
+
+fn unpack_n(data: &[i64], bits: usize, count: usize) -> Vec<u16> {
     let per = 64 / bits;
     let mask = (1u64 << bits) - 1;
-    let mut out = Vec::with_capacity(4096);
-    for i in 0..4096 {
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
         let Some(w) = data.get(i / per) else { break };
         out.push(((*w as u64 >> ((i % per) * bits)) & mask) as u16);
     }
-    out.resize(4096, 0);
+    out.resize(count, 0);
     out
 }
 
@@ -115,7 +122,25 @@ pub fn chunk(t: &Tag) -> Option<Chunk> {
             });
             v
         };
-        sections.push(Section { y, palette, idx });
+        // 1.18+: biomes { palette: [names], data } per 4×4×4 cell.
+        let (mut biomes, mut biome_idx) = (Vec::new(), Vec::new());
+        if let Some(b) = s.get("biomes") {
+            biomes = b
+                .get("palette")
+                .map(Tag::list)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|t| t.str().map(str::to_string))
+                .collect();
+            let data = b.get("data").map(Tag::longs).unwrap_or(&[]);
+            if biomes.len() > 1 && !data.is_empty() {
+                let bits = (usize::BITS - (biomes.len() - 1).leading_zeros()) as usize;
+                let n = biomes.len() as u16;
+                biome_idx =
+                    unpack_n(data, bits.max(1), 64).into_iter().map(|i| if i < n { i as u8 } else { 0 }).collect();
+            }
+        }
+        sections.push(Section { y, palette, idx, biomes, biome_idx });
     }
     Some(Chunk { x, z, sections })
 }

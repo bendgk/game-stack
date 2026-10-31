@@ -306,7 +306,9 @@ fn trace_dag(root: u32, root_level: u32, iside: u32, ro: vec3<f32>, rd: vec3<f32
     stack_node[level] = root;
     stack_key[level] = vec3<i32>(0);
     let maxc = i32(iside) - 1;
-    let step_sign = vec3<f32>(sign(rd));
+    // Never 0 (sign(0) would stall stepping along an axis the ray is exactly parallel to:
+    // a one-pixel line down the middle of the screen when looking straight along an axis).
+    let step_sign = select(vec3<f32>(-1.0), vec3<f32>(1.0), rd >= vec3<f32>(0.0));
 
     for (var it = 0u; it < max_steps; it++) {
         h.steps = it;
@@ -372,6 +374,10 @@ fn trace_dag(root: u32, root_level: u32, iside: u32, ro: vec3<f32>, rd: vec3<f32
         var te = (bound - ro) * inv;
         // Axes the ray barely moves along can't be the exit (their inverse is unreliable).
         te = select(te, vec3<f32>(1e30), abs(rd) < vec3<f32>(1e-7));
+        // Nor can a face that doesn't move the ray forward: a ray running along a voxel plane
+        // (camera exactly on a boundary, looking along an axis) would otherwise "exit" through
+        // that plane every step, crawl, and run out of steps — a see-through line on screen.
+        te = select(te, vec3<f32>(1e30), te <= vec3<f32>(t + 1e-5));
         let t_prev = t;
         if (te.x <= te.y && te.x <= te.z) { t = te.x; n = vec3<f32>(-step_sign.x, 0.0, 0.0); }
         else if (te.y <= te.z) { t = te.y; n = vec3<f32>(0.0, -step_sign.y, 0.0); }

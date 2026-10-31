@@ -122,8 +122,14 @@ struct Area {
     cw: i32,
 }
 
-/// A section's palette (global state ids) and its 4096 indices.
-type Sec = (Vec<u32>, Arc<Vec<u16>>);
+/// A section: palette (global ids), its 4096 indices, and for biome-tinted states one global
+/// id per section biome, with the 64 biome cell indices.
+struct Sec {
+    pal: Vec<u32>,
+    idx: Arc<Vec<u16>>,
+    tinted: Vec<Option<Vec<u32>>>,
+    biome_idx: Vec<u8>,
+}
 
 struct Column {
     /// Sections by index (y - Y0/16).
@@ -139,13 +145,15 @@ impl Area {
         let (bx, bz) = (self.x0 + ax, self.z0 + az);
         let (cx, cz) = (bx.div_euclid(16) - self.cx0, bz.div_euclid(16) - self.cz0);
         let Some(Some(col)) = self.cols.get((cz * self.cw + cx) as usize) else { return 0 };
-        let Some(Some((pal, idx))) = col.secs.get((ay / 16) as usize) else { return 0 };
-        let i = if idx.is_empty() {
-            0
-        } else {
-            idx[((ay % 16) * 256 + bz.rem_euclid(16) * 16 + bx.rem_euclid(16)) as usize] as usize
-        };
-        pal.get(i).copied().unwrap_or(0)
+        let Some(Some(sec)) = col.secs.get((ay / 16) as usize) else { return 0 };
+        let (lx, ly, lz) = (bx.rem_euclid(16), ay % 16, bz.rem_euclid(16));
+        let i = if sec.idx.is_empty() { 0 } else { sec.idx[(ly * 256 + lz * 16 + lx) as usize] as usize };
+        if let Some(Some(by_biome)) = sec.tinted.get(i) {
+            let cell = ((ly / 4) * 16 + (lz / 4) * 4 + lx / 4) as usize;
+            let b = sec.biome_idx.get(cell).copied().unwrap_or(0) as usize;
+            return by_biome.get(b).copied().unwrap_or(0);
+        }
+        sec.pal.get(i).copied().unwrap_or(0)
     }
 
     /// Any non-air section touching the block box?
@@ -193,8 +201,14 @@ fn material(rgb: [u8; 3], kind: Kind) -> Material {
     }
 }
 
-fn build_looks(assets: &Assets, states: &[State], pal: &mut Palette) -> Looks {
-    let grids: Vec<Option<Grid>> = states.par_iter().map(|s| voxelize::block(assets, s)).collect();
+fn build_looks(assets: &Assets, states: &[(State, Option<String>)], pal: &mut Palette) -> Looks {
+    let grids: Vec<Option<Grid>> = states
+        .par_iter()
+        .map(|(s, biome)| match biome {
+            Some(b) => voxelize::block_in(assets, s, voxelize::biome_tint(b)),
+            None => voxelize::block(assets, s),
+        })
+        .collect();
     let mut ids: HashMap<([u8; 3], Kind), Mat> = HashMap::new();
     let grids = grids
         .into_iter()
@@ -344,31 +358,43 @@ pub fn import(files: &WorldFiles, assets: &Assets, opt: &Options) -> Result<Impo
         return Err(format!("no chunks around ({cx}, {cz}); try another center"));
     }
     // Global block states.
-    let mut gids: BTreeMap<State, u32> = BTreeMap::new();
-    let mut states: Vec<State> = vec![State { name: "minecraft:air".into(), props: Default::default() }];
+    // Global ids: (state, biome tint) — the biome only for blocks that take its colour.
+    let mut gids: BTreeMap<(State, Option<String>), u32> = BTreeMap::new();
+    let mut states: Vec<(State, Option<String>)> =
+        vec![(State { name: "minecraft:air".into(), props: Default::default() }, None)];
+    let mut gid = |key: (State, Option<String>)| -> u32 {
+        *gids.entry(key.clone()).or_insert_with(|| {
+            states.push(key);
+            (states.len() - 1) as u32
+        })
+    };
     let mut cols: Vec<Option<Column>> = (0..cw * ch).map(|_| None).collect();
     let nsec = (HEIGHT / 16) as usize;
     for c in &chunks {
-        let mut col = Column { secs: vec![None; nsec] };
+        let mut col = Column { secs: (0..nsec).map(|_| None).collect() };
         for s in &c.sections {
             let si = s.y - Y0 / 16;
             if si < 0 || si as usize >= nsec {
                 continue;
             }
-            let pal: Vec<u32> = s
-                .palette
-                .iter()
-                .map(|st| {
-                    if st.is_air() {
-                        return 0;
-                    }
-                    *gids.entry(st.clone()).or_insert_with(|| {
-                        states.push(st.clone());
-                        (states.len() - 1) as u32
-                    })
-                })
-                .collect();
-            col.secs[si as usize] = Some((pal, Arc::new(s.idx.clone())));
+            let biomes: Vec<String> =
+                if s.biomes.is_empty() { vec!["minecraft:plains".into()] } else { s.biomes.clone() };
+            let mut pal = Vec::with_capacity(s.palette.len());
+            let mut tinted = Vec::with_capacity(s.palette.len());
+            for st in &s.palette {
+                if st.is_air() {
+                    pal.push(0);
+                    tinted.push(None);
+                } else if voxelize::tinted(st) {
+                    pal.push(gid((st.clone(), Some(biomes[0].clone()))));
+                    tinted.push(Some(biomes.iter().map(|b| gid((st.clone(), Some(b.clone())))).collect()));
+                } else {
+                    pal.push(gid((st.clone(), None)));
+                    tinted.push(None);
+                }
+            }
+            col.secs[si as usize] =
+                Some(Sec { pal, idx: Arc::new(s.idx.clone()), tinted, biome_idx: s.biome_idx.clone() });
         }
         cols[((c.z - cz0) * cw + (c.x - cx0)) as usize] = Some(col);
     }
@@ -381,6 +407,15 @@ pub fn import(files: &WorldFiles, assets: &Assets, opt: &Options) -> Result<Impo
             chunks.len(),
             states.len()
         );
+        let mut biomes: BTreeMap<&str, usize> = BTreeMap::new();
+        for c in &chunks {
+            for s in &c.sections {
+                for b in &s.biomes {
+                    *biomes.entry(b.as_str()).or_default() += 1;
+                }
+            }
+        }
+        eprintln!("biomes {biomes:?}");
     }
     let area = Area { x0, z0, w, cols, cx0, cz0, cw };
     let mut palette = Palette::default();
