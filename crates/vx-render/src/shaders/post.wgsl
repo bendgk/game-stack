@@ -1,19 +1,24 @@
-// Pass 4 — post (at render resolution): contrast-adaptive sharpening + bloom, so the final
+// Pass 5 — post (at output resolution): contrast-adaptive sharpening + bloom, so the final
 // upscale to the screen (which may have 4x the pixels on a Retina display) is a cheap 5-tap
 // bicubic. Bloom strength comes from u.tint.w.
 
 @group(1) @binding(0) var src: texture_2d<f32>;
 @group(1) @binding(1) var o_post: texture_storage_2d<rgba16float, write>;
 
+fn ld4(c: vec2<i32>) -> vec4<f32> {
+    return textureLoad(src, clamp(c, vec2<i32>(0), vec2<i32>(u.out_res.xy) - 1), 0);
+}
+
 fn ld(c: vec2<i32>) -> vec3<f32> {
-    return textureLoad(src, clamp(c, vec2<i32>(0), vec2<i32>(u.res.xy) - 1), 0).rgb;
+    return textureLoad(src, clamp(c, vec2<i32>(0), vec2<i32>(u.out_res.xy) - 1), 0).rgb;
 }
 
 @compute @workgroup_size(8, 8)
 fn post_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if (f32(gid.x) >= u.res.x || f32(gid.y) >= u.res.y) { return; }
+    if (f32(gid.x) >= u.out_res.x || f32(gid.y) >= u.out_res.y) { return; }
     let c = vec2<i32>(gid.xy);
-    var col = ld(c);
+    let centre = ld4(c);
+    var col = centre.rgb;
     // Sharpen less where local contrast is already high (no halos on hard edges).
     let n = ld(c + vec2<i32>(0, -1));
     let s = ld(c + vec2<i32>(0, 1));
@@ -22,6 +27,7 @@ fn post_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let mn = min(col, min(min(n, s), min(e, w)));
     let mx = max(col, max(max(n, s), max(e, w)));
     let amp = sqrt(clamp(min(mn, 1.0 - min(mx, vec3<f32>(1.0))) / max(mx, vec3<f32>(1e-4)), vec3<f32>(0.0), vec3<f32>(1.0)));
+
     let wgt = -amp * 0.18;
     col = max((col + (n + s + e + w) * wgt) / (1.0 + 4.0 * wgt), vec3<f32>(0.0));
     // Bloom: wide taps, bright pixels only.

@@ -159,6 +159,8 @@ struct Uniforms {
     params: [f32; 4],
     tint: [f32; 4],
     extra: [u32; 4],
+    /// Output resolution: width, height, 1/width, 1/height.
+    out_res: [f32; 4],
 }
 
 /// A prefab to draw (a player, a physics prop). `root`/`levels` address a DAG that was
@@ -323,6 +325,8 @@ const U32: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 struct Targets {
     w: u32,
     h: u32,
+    ow: u32,
+    oh: u32,
     pos: [wgpu::TextureView; 2],
     nrm: [wgpu::TextureView; 2],
     alb: wgpu::TextureView,
@@ -350,18 +354,22 @@ fn tex(device: &wgpu::Device, w: u32, h: u32, f: wgpu::TextureFormat, label: &st
 }
 
 impl Targets {
-    fn new(d: &wgpu::Device, w: u32, h: u32) -> Self {
+    /// G-buffer and lighting at the ray-traced size (`w`×`h`); the temporal history and the
+    /// post pass at the output size (`ow`×`oh`): TAA up-samples while it accumulates.
+    fn new(d: &wgpu::Device, w: u32, h: u32, ow: u32, oh: u32) -> Self {
         let two = |f, l| [tex(d, w, h, f, l), tex(d, w, h, f, l)];
         Targets {
             w,
             h,
+            ow,
+            oh,
             pos: two(F32X4, "pos"),
             nrm: two(F16X4, "nrm"),
             alb: tex(d, w, h, F16X4, "alb"),
             mat: tex(d, w, h, U32, "mat"),
             hdr: tex(d, w, h, F16X4, "hdr"),
-            taa: two(F16X4, "taa"),
-            post: tex(d, w, h, F16X4, "post"),
+            taa: [tex(d, ow, oh, F16X4, "taa"), tex(d, ow, oh, F16X4, "taa")],
+            post: tex(d, ow, oh, F16X4, "post"),
             vis: tex(d, w.div_ceil(2), h.div_ceil(2), wgpu::TextureFormat::R32Float, "sun visibility"),
         }
     }
@@ -581,7 +589,7 @@ impl Renderer {
             });
             Pass { pipeline, layout: l }
         };
-        let targets = Targets::new(&device, width.max(1), height.max(1));
+        let targets = Targets::new(&device, width.max(1), height.max(1), width.max(1), height.max(1));
         Renderer {
             device,
             queue,
@@ -628,9 +636,19 @@ impl Renderer {
         (self.targets.w, self.targets.h)
     }
 
+    /// Ray-traced resolution (the output size stays; see [`Renderer::resize_output`]).
     pub fn resize(&mut self, w: u32, h: u32) {
         if (w, h) != (self.targets.w, self.targets.h) && w > 0 && h > 0 {
-            self.targets = Targets::new(&self.device, w, h);
+            self.targets = Targets::new(&self.device, w, h, self.targets.ow, self.targets.oh);
+            self.frame = 0;
+        }
+    }
+
+    /// Output resolution (the surface `render` draws into). Temporal anti-aliasing accumulates
+    /// at this size, so a lower ray-traced resolution is up-sampled with real detail over frames.
+    pub fn resize_output(&mut self, ow: u32, oh: u32) {
+        if (ow, oh) != (self.targets.ow, self.targets.oh) && ow > 0 && oh > 0 {
+            self.targets = Targets::new(&self.device, self.targets.w, self.targets.h, ow, oh);
             self.frame = 0;
         }
     }
@@ -724,7 +742,10 @@ impl Renderer {
         }
         let jx = (halton(self.frame % 16 + 1, 2) - 0.5) * 2.0 / w as f32;
         let jy = (halton(self.frame % 16 + 1, 3) - 0.5) * 2.0 / h as f32;
-        let pixel_angle = cam.fov_y / h as f32;
+        // Level of detail between the traced and the output pixel size: temporal up-sampling
+        // resolves detail finer than one traced pixel.
+        let (ow, oh) = (self.targets.ow, self.targets.oh);
+        let pixel_angle = cam.fov_y / (h as f32 * oh as f32).sqrt();
         let u = Uniforms {
             inv_view_proj: vp.inverse().to_cols_array_2d(),
             view_proj: vp.to_cols_array_2d(),
@@ -738,6 +759,7 @@ impl Renderer {
             params: [pixel_angle * env.lod, env.fog, env.gi_distance, env.night()],
             tint: [env.tint.x, env.tint.y, env.tint.z, env.bloom],
             extra: [self.inst_count, self.still, 0, 0],
+            out_res: [ow as f32, oh as f32, 1.0 / ow as f32, 1.0 / oh as f32],
         };
         self.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
         let srgb_target = self.target_format.is_srgb();
@@ -817,10 +839,11 @@ impl Renderer {
             cp.set_bind_group(0, &scene, &[]);
             cp.set_pipeline(&pass.pipeline);
             cp.set_bind_group(1, *g, &[]);
-            // The shadow pass runs at half resolution.
-            let half = std::ptr::eq(*pass, &self.shadow);
-            if half {
+            // The shadow pass runs at half resolution; TAA and post at the output resolution.
+            if std::ptr::eq(*pass, &self.shadow) {
                 cp.dispatch_workgroups(w.div_ceil(2).div_ceil(8), h.div_ceil(2).div_ceil(8), 1);
+            } else if std::ptr::eq(*pass, &self.taa) || std::ptr::eq(*pass, &self.post) {
+                cp.dispatch_workgroups(ow.div_ceil(8), oh.div_ceil(8), 1);
             } else {
                 cp.dispatch_workgroups(gx, gy, 1);
             }

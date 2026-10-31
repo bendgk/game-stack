@@ -281,6 +281,35 @@ fn bench(a: &HashMap<String, String>) {
     hl.render(&cam, &env, 10, 0.0); // warm-up (pipelines, caches)
     let profiling = hl.r.enable_profiling();
     // Moving camera: no still-frame convergence shortcut, like walking.
+    if let Some(out) = a.get("quality") {
+        // Motion quality: walk 40 frames at 5 m/s (2.7 voxels/frame), keep the last frame; then
+        // the same camera, still, at full output resolution, converged over 64 jittered frames
+        // (the super-sampled ground truth). Report the mean error between them.
+        let step = Vec3::new(0.0, 0.0, -2.7);
+        hl.r.reset_history();
+        let mut c = cam;
+        for i in 0..40 {
+            c = Camera { pos: cam.pos + step * i as f32, ..cam };
+            hl.render(&c, &env, 1, i as f32 / 60.0);
+        }
+        hl.save_png(&format!("{out}_moving.png")).unwrap();
+        let (_, _, moving) = hl.read();
+        hl.r.resize(w, h);
+        hl.render(&c, &env, 64, 0.0);
+        hl.save_png(&format!("{out}_truth.png")).unwrap();
+        let (_, _, truth) = hl.read();
+        let err: f64 =
+            moving.iter().zip(&truth).map(|(a, b)| (*a as f64 - *b as f64).abs()).sum::<f64>() / moving.len() as f64;
+        let edge: f64 = moving
+            .chunks(4)
+            .zip(truth.chunks(4))
+            .map(|(a, b)| (0..3).map(|k| (a[k] as f64 - b[k] as f64).abs()).fold(0.0, f64::max))
+            .filter(|e| *e > 24.0)
+            .count() as f64
+            / (moving.len() / 4) as f64;
+        println!("motion quality: mean error {err:.2} /255 · {:.2}% of pixels off by >24", edge * 100.0);
+        return;
+    }
     // Report the fastest and the median frame: other GPU users (a browser tab, a compile) only
     // ever add time, so the minimum is the closest to the renderer's own cost.
     let n = 90;

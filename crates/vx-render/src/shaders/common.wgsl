@@ -17,7 +17,8 @@ struct Uniforms {
     world: vec4<u32>,         // x = root offset, y = root level, z = side (voxels), w = flags
     params: vec4<f32>,        // x = lod bias (radians/px), y = fog density, z = gi distance, w = night amount
     tint: vec4<f32>,          // atmosphere tint rgb, w = cloud cover
-    extra: vec4<u32>,         // x = instance count
+    extra: vec4<u32>,         // x = instance count, y = still frames
+    out_res: vec4<f32>,       // output width, height, 1/width, 1/height (TAA up-samples to it)
 };
 
 /// A prefab drawn at an arbitrary position/rotation (players, physics props). Its DAG lives in

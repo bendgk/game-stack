@@ -69,7 +69,7 @@ impl Headless {
 
     /// Read back the last frame as tightly packed RGBA8.
     pub fn read(&self) -> (u32, u32, Vec<u8>) {
-        let (w, h) = self.r.size();
+        let (w, h) = (self.target.width(), self.target.height());
         let bpr = (w * 4).div_ceil(256) * 256;
         let buf = self.r.device().create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
